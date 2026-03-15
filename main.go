@@ -262,6 +262,9 @@ func main() {
 	// 全局最先初始化数据库
 	database.InitDB()
 
+	// 修复：回测模式也需要 httpClient 来从币安抓取历史 K 线数据
+	httpClient = &http.Client{Timeout: httpTimeout}
+
 	// Phase 4.2 检查是否通过命令行参数启动回测模式
 	if len(os.Args) > 1 && os.Args[1] == "backtest" {
 		slog.Info("🛠️ 进入离线回测模式 (Backtest Mode)")
@@ -283,8 +286,7 @@ func main() {
 	bscWSS := mustEnv("BSC_WSS_RPC")
 
 	pairSemaphore = make(chan struct{}, maxConcurrentPairs)
-	httpClient = &http.Client{Timeout: httpTimeout}
-
+	
 	rps := defaultRPCRPS
 	if v := os.Getenv("RPC_RPS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

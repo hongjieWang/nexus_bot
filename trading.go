@@ -207,6 +207,11 @@ func (e *TradingEngine) onCandle() {
 	snapshot := strategy.MarketSnapshot{
 		Instrument: tradingSymbol,
 		MidPrice:   price,
+		// 修复：补充 Bid/Ask（用最新 K 线近似），供 grid_mm ReduceOnly 和 MomentumBreakout 使用
+		// 实盘中 Bid/Ask 略偏于真实价格，此处用 close 作保守近似
+		Bid:       price,
+		Ask:       price,
+		Volume24h: lastKline.Volume,
 	}
 
 	orders := e.strat.OnTick(snapshot, ctx)
@@ -604,9 +609,13 @@ func fetchKlines(symbol, interval string, limit int) ([]Kline, error) {
 	var klines []Kline
 	for _, r := range raw {
 		klines = append(klines, Kline{
-			OpenTime: int64(r[0].(float64)),
-			Open:     parseF(r[1]), High: parseF(r[2]),
-			Low: parseF(r[3]), Close: parseF(r[4]),
+			OpenTime:  int64(r[0].(float64)),
+			Open:      parseF(r[1]),
+			High:      parseF(r[2]),
+			Low:       parseF(r[3]),
+			Close:     parseF(r[4]),
+			Volume:    parseF(r[5]), // 修复：r[5] 为成交量，之前未赋值导致 MomentumBreakout 的 volSurge 永远为 false
+			CloseTime: int64(parseF(r[6])),
 		})
 	}
 	return klines, nil

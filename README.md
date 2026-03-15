@@ -81,7 +81,85 @@ npm run dev
 ```
 
 Visit `http://localhost:5173` in your browser. From the dashboard, you can securely enter your Binance API Keys and your EVM Private Key.
+所有策略通过 `strategies.json` 加载，实盘时通过 `ACTIVE_STRATEGY` 环境变量指定唯一策略 ID。
 
+### strategies.json 格式
+
+```json
+[
+  {
+    "id": "my_ema",
+    "type": "ema_macd_rsi",
+    "params": {}
+  },
+  {
+    "id": "my_grid",
+    "type": "grid_mm",
+    "params": {
+      "gridSpacingBps": 20.0,
+      "numLevels": 3,
+      "sizePerLevel": 0.05,
+      "maxPosition": 0.15
+    }
+  }
+]
+```
+
+### 策略一览
+
+#### `ema_macd_rsi` — 趋势跟踪策略
+
+基于三均线（EMA9/21/55）、RSI(14)、MACD 的多重过滤入场：
+
+- **做多条件**：EMA9 > EMA21 > EMA55，价格 > EMA21，RSI 在 45–70，MACD 线 > Signal 线
+- **做空条件**：EMA9 < EMA21 < EMA55，价格 < EMA21，RSI 在 30–55，MACD 线 < Signal 线
+- **止盈止损**：ATR(14) × 4 止盈，ATR(14) × 2 止损
+- **最少 K 线**：60 根（保证 EMA55 + MACD Signal 热身完整）
+
+#### `momentum_breakout` — 动量突破策略
+
+在 N 周期高低点突破且成交量放大时入场：
+
+- **参数**：`lookback`（回溯周期，默认 20），`breakoutThresholdBps`（突破幅度，默认 50 bps），`volumeSurgeMult`（成交量倍数，默认 2×），`trailingStopBps`（追踪止损，默认 30 bps）
+- **追踪止损**：维护历史最高/最低价水印，止损线只向有利方向移动，平仓后自动重置
+
+#### `simple_mm` — 简单做市策略
+
+对称报价 Bid/Ask，含库存偏斜保护：
+
+- **参数**：`spreadBps`（价差，默认 20 bps），`size`（每单量）
+- **库存偏斜**：多仓累积时上移报价中心，减少继续买入的吸引力；最大持仓为 `size × 5`，超限停止单边报价
+
+#### `grid_mm` — 网格做市策略
+
+在中间价上下方各挂 N 档限价单：
+
+- **参数**：`gridSpacingBps`（档间距），`numLevels`（档数），`sizePerLevel`（每档量），`maxPosition`（最大持仓）
+- **ReduceOnly 模式**：当引擎传入 `ctx.ReduceOnly=true` 时，停止新网格报价，仅挂平仓单
+
+---
+
+## 回测
+
+在不启动实盘引擎的情况下验证策略参数：
+
+```bash
+./nexus-bot backtest
+```
+
+回测引擎读取 `strategies.json` 中的全部策略，每个策略运行 1500 根 15m K 线，初始资金 50 USDT。
+
+**回测结果示例：**
+
+```
+strategy=my_ema pnl=$12.34 win_rate=58.33% trades=24 max_drawdown=8.21% ($4.11)
+```
+
+**回测机制说明：**
+
+- 市价单以**下一根 K 线开盘价**成交，消除 look-ahead bias
+- 每笔成交扣除 **0.04% taker 手续费**
+- 挂单撮合按 K 线 High/Low 区间判断，SL/TP 挂单同样参与撮合
 ## 🧪 Backtesting
 
 You can run offline backtests on historical data to validate strategy parameters without starting the live trading engine.

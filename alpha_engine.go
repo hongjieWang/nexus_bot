@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -330,11 +329,20 @@ func evaluateSmartWallets() {
 				w.LastActiveAt = lastTrade.Timestamp
 			}
 
+			// 关键修复：防止零值时间导致 MySQL 报错 (0000-00-00)
+			if w.LastActiveAt.IsZero() {
+				if !w.CreatedAt.IsZero() {
+					w.LastActiveAt = w.CreatedAt
+				} else {
+					w.LastActiveAt = time.Now()
+				}
+			}
+
 			// 样本量保护：少于 3 笔已结交易时降级使用旧公式，避免噪声得高分
-			closedCount := 0
+			var closedCount int64 // 修复: 直接使用 int64 (中危 #15)
 			database.DB.Model(&database.SmartWalletTrade{}).
 				Where("wallet = ? AND action = 'SELL'", w.Address).
-				Count((*int64)(unsafe.Pointer(&closedCount)))
+				Count(&closedCount)
 
 			if closedCount >= 3 {
 				w.Score = calcScore(w)
