@@ -67,6 +67,64 @@ const translations: Record<Locale, TranslationTree> = {
       present: '已配置',
       missing: '缺失',
     },
+    navigation: {
+      kicker: '模块导航',
+      title: '在首页头部切换业务模块。',
+      description: 'Phase 1 先把 Header 和模块切换框架搭好，Orders、Scanner、Logs 会在后续阶段接入真实数据。',
+      activeModuleLabel: '当前模块',
+      summaryExecutions: '执行记录',
+      summaryStrategies: '策略数量',
+      summaryLocale: '当前语言',
+      tabs: {
+        overview: {
+          label: '总览',
+          description: '系统状态与部署准备',
+        },
+        orders: {
+          label: '订单',
+          description: '实盘与模拟交易面板',
+        },
+        scanner: {
+          label: '扫链',
+          description: 'Token 发现与过滤结果',
+        },
+        logs: {
+          label: '日志',
+          description: '后台运行与排障查看',
+        },
+        strategies: {
+          label: '策略',
+          description: '策略验证与回测入口',
+        },
+        settings: {
+          label: '设置',
+          description: '密钥仓与引擎控制',
+        },
+      },
+      placeholders: {
+        orders: {
+          title: '订单交易模块骨架',
+          description: '这个模块会承接当前订单、持仓、成交和风控动作，并明确区分实盘与模拟交易。',
+          point1: '前端将增加订单列表、持仓视图和成交明细抽屉。',
+          point2: '后端将接入 `/api/orders`、`/api/trades`、`/api/positions`。',
+          point3: '后续会补充按策略、模式、交易对筛选能力。',
+        },
+        scanner: {
+          title: 'Token 扫链模块骨架',
+          description: '这个模块会展示最近一周的 Token 扫描结果，并明确显示未通过的原因。',
+          point1: '前端将增加筛选、状态标签和失败原因分组。',
+          point2: '后端需要补充扫链结果表及 `/api/token-scans`。',
+          point3: '会加入最近 7 天数据保留和定期清理机制。',
+        },
+        logs: {
+          title: '运行日志模块骨架',
+          description: '这个模块会让前端可查看后台日志，用于定位策略执行、扫链和风控问题。',
+          point1: '前端将支持实时刷新、级别筛选和关键字搜索。',
+          point2: '后端需要统一日志格式并提供 `/api/logs` 接口。',
+          point3: '后续可扩展为 SSE 流式日志查看。',
+        },
+      },
+    },
     overview: {
       kicker: '总览',
       title: '系统脉搏与部署姿态',
@@ -226,6 +284,68 @@ const translations: Record<Locale, TranslationTree> = {
       standby: 'Standby',
       present: 'Present',
       missing: 'Missing',
+    },
+    navigation: {
+      kicker: 'Module Navigation',
+      title: 'Switch dashboard surfaces from the header.',
+      description:
+        'Phase 1 builds the header navigation and module shell first. Orders, scanner, and logs will attach to real data in the next stages.',
+      activeModuleLabel: 'Active module',
+      summaryExecutions: 'Executions',
+      summaryStrategies: 'Strategies',
+      summaryLocale: 'Locale',
+      tabs: {
+        overview: {
+          label: 'Overview',
+          description: 'System pulse and deployment posture',
+        },
+        orders: {
+          label: 'Orders',
+          description: 'Live and simulated trading panel',
+        },
+        scanner: {
+          label: 'Scanner',
+          description: 'Token discovery and filter outcomes',
+        },
+        logs: {
+          label: 'Logs',
+          description: 'Backend runtime and troubleshooting',
+        },
+        strategies: {
+          label: 'Strategies',
+          description: 'Validation and backtest entrypoint',
+        },
+        settings: {
+          label: 'Settings',
+          description: 'Vault and engine controls',
+        },
+      },
+      placeholders: {
+        orders: {
+          title: 'Orders module scaffold',
+          description:
+            'This module will carry current orders, positions, fills, and risk actions, with a clear split between live and simulated trading.',
+          point1: 'Frontend will add order lists, position views, and fill detail drawers.',
+          point2: 'Backend will expose `/api/orders`, `/api/trades`, and `/api/positions`.',
+          point3: 'Filters for strategy, mode, and symbol will follow.',
+        },
+        scanner: {
+          title: 'Token scanner scaffold',
+          description:
+            'This module will show the last seven days of token scan results and make rejection reasons visible.',
+          point1: 'Frontend will add filters, status tags, and failure-reason grouping.',
+          point2: 'Backend needs a scan result table and `/api/token-scans`.',
+          point3: 'A rolling seven-day retention job will be added.',
+        },
+        logs: {
+          title: 'Runtime logs scaffold',
+          description:
+            'This module will expose backend logs in the frontend for strategy execution, scanner, and risk troubleshooting.',
+          point1: 'Frontend will support refresh, level filters, and keyword search.',
+          point2: 'Backend needs standardized log fields and `/api/logs`.',
+          point3: 'SSE-based streaming can be added later.',
+        },
+      },
     },
     overview: {
       kicker: 'Overview',
@@ -387,6 +507,68 @@ const translations: Record<Locale, TranslationTree> = {
       present: '設定済み',
       missing: '未設定',
     },
+    navigation: {
+      kicker: 'モジュールナビゲーション',
+      title: 'ヘッダーから業務モジュールを切り替えます。',
+      description:
+        'Phase 1 ではヘッダーとモジュール切替の土台を先に整えます。Orders、Scanner、Logs は次の段階で実データに接続します。',
+      activeModuleLabel: '現在のモジュール',
+      summaryExecutions: '実行記録',
+      summaryStrategies: '戦略数',
+      summaryLocale: '言語',
+      tabs: {
+        overview: {
+          label: '概要',
+          description: 'システム状態と稼働準備',
+        },
+        orders: {
+          label: '注文',
+          description: '本番とシミュレーションの取引画面',
+        },
+        scanner: {
+          label: 'スキャン',
+          description: 'Token 発見とフィルタ結果',
+        },
+        logs: {
+          label: 'ログ',
+          description: 'バックエンド実行状況と調査',
+        },
+        strategies: {
+          label: '戦略',
+          description: '検証とバックテストの入口',
+        },
+        settings: {
+          label: '設定',
+          description: 'ボールトとエンジン制御',
+        },
+      },
+      placeholders: {
+        orders: {
+          title: '注文モジュールの土台',
+          description:
+            'このモジュールでは現在の注文、ポジション、約定、リスク動作を表示し、本番取引とシミュレーション取引を明確に分けます。',
+          point1: 'フロントエンドでは注文一覧、ポジション表示、約定詳細ドロワーを追加します。',
+          point2: 'バックエンドでは `/api/orders`、`/api/trades`、`/api/positions` を提供します。',
+          point3: '戦略、モード、銘柄での絞り込みを後続で追加します。',
+        },
+        scanner: {
+          title: 'Token スキャナの土台',
+          description:
+            'このモジュールでは直近 7 日間の Token スキャン結果を表示し、拒否理由も確認できるようにします。',
+          point1: 'フロントエンドではフィルタ、状態タグ、失敗理由グループを追加します。',
+          point2: 'バックエンドではスキャン結果テーブルと `/api/token-scans` が必要です。',
+          point3: '7 日保持の定期クリーンアップも追加します。',
+        },
+        logs: {
+          title: '実行ログの土台',
+          description:
+            'このモジュールでは戦略実行、スキャン、リスク対応の確認のためにバックエンドログをフロントエンドで閲覧可能にします。',
+          point1: 'フロントエンドでは更新、レベル絞り込み、キーワード検索を追加します。',
+          point2: 'バックエンドでは標準化ログ項目と `/api/logs` が必要です。',
+          point3: '後続で SSE ストリーミングにも拡張できます。',
+        },
+      },
+    },
     overview: {
       kicker: '概要',
       title: 'システム状態と稼働姿勢',
@@ -546,6 +728,68 @@ const translations: Record<Locale, TranslationTree> = {
       standby: '대기',
       present: '설정됨',
       missing: '없음',
+    },
+    navigation: {
+      kicker: '모듈 내비게이션',
+      title: '헤더에서 업무 모듈을 전환합니다.',
+      description:
+        'Phase 1 에서는 헤더와 모듈 전환 프레임만 먼저 구축합니다. Orders, Scanner, Logs 는 다음 단계에서 실제 데이터와 연결합니다.',
+      activeModuleLabel: '현재 모듈',
+      summaryExecutions: '실행 기록',
+      summaryStrategies: '전략 수',
+      summaryLocale: '언어',
+      tabs: {
+        overview: {
+          label: '개요',
+          description: '시스템 상태와 실행 준비',
+        },
+        orders: {
+          label: '주문',
+          description: '실거래와 모의거래 패널',
+        },
+        scanner: {
+          label: '스캐너',
+          description: 'Token 탐지와 필터 결과',
+        },
+        logs: {
+          label: '로그',
+          description: '백엔드 실행 상태와 장애 분석',
+        },
+        strategies: {
+          label: '전략',
+          description: '검증과 백테스트 진입점',
+        },
+        settings: {
+          label: '설정',
+          description: '볼트와 엔진 제어',
+        },
+      },
+      placeholders: {
+        orders: {
+          title: '주문 모듈 골격',
+          description:
+            '이 모듈은 현재 주문, 포지션, 체결, 리스크 동작을 담고 실거래와 모의거래를 명확히 구분합니다.',
+          point1: '프런트엔드는 주문 목록, 포지션 뷰, 체결 상세 드로어를 추가합니다.',
+          point2: '백엔드는 `/api/orders`, `/api/trades`, `/api/positions` 를 제공합니다.',
+          point3: '전략, 모드, 심볼 필터는 다음 단계에서 추가합니다.',
+        },
+        scanner: {
+          title: 'Token 스캐너 골격',
+          description:
+            '이 모듈은 최근 7일의 Token 스캔 결과를 보여주고 탈락 사유를 명확히 드러냅니다.',
+          point1: '프런트엔드는 필터, 상태 태그, 실패 사유 그룹을 추가합니다.',
+          point2: '백엔드는 스캔 결과 테이블과 `/api/token-scans` 가 필요합니다.',
+          point3: '7일 보관과 정기 정리 작업을 추가합니다.',
+        },
+        logs: {
+          title: '실행 로그 골격',
+          description:
+            '이 모듈은 전략 실행, 스캐너, 리스크 대응 문제를 추적하기 위해 백엔드 로그를 프런트엔드에서 볼 수 있게 합니다.',
+          point1: '프런트엔드는 새로고침, 레벨 필터, 키워드 검색을 지원합니다.',
+          point2: '백엔드는 표준 로그 필드와 `/api/logs` 가 필요합니다.',
+          point3: '추후 SSE 기반 스트리밍으로 확장할 수 있습니다.',
+        },
+      },
     },
     overview: {
       kicker: '개요',

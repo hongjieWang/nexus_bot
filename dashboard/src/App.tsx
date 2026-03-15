@@ -34,6 +34,7 @@ interface Metrics {
 }
 
 type StrategyStatus = 'Validated' | 'Watch' | 'Tuning'
+type DashboardModule = 'overview' | 'orders' | 'scanner' | 'logs' | 'strategies' | 'settings'
 
 interface StrategySeed {
   id: string
@@ -52,65 +53,17 @@ interface FeedSeed {
 }
 
 const strategySeeds: StrategySeed[] = [
-  {
-    id: 'ema_macd_rsi',
-    status: 'Validated',
-    confidence: 'A-',
-    winRate: '58.3%',
-    drawdown: '8.2%',
-    expectancy: '+1.36R',
-  },
-  {
-    id: 'momentum_breakout',
-    status: 'Watch',
-    confidence: 'B+',
-    winRate: '51.8%',
-    drawdown: '11.4%',
-    expectancy: '+0.82R',
-  },
-  {
-    id: 'grid_mm',
-    status: 'Tuning',
-    confidence: 'B',
-    winRate: '63.1%',
-    drawdown: '13.7%',
-    expectancy: '+0.54R',
-  },
-  {
-    id: 'simple_mm',
-    status: 'Watch',
-    confidence: 'B-',
-    winRate: '49.6%',
-    drawdown: '9.1%',
-    expectancy: '+0.28R',
-  },
+  { id: 'ema_macd_rsi', status: 'Validated', confidence: 'A-', winRate: '58.3%', drawdown: '8.2%', expectancy: '+1.36R' },
+  { id: 'momentum_breakout', status: 'Watch', confidence: 'B+', winRate: '51.8%', drawdown: '11.4%', expectancy: '+0.82R' },
+  { id: 'grid_mm', status: 'Tuning', confidence: 'B', winRate: '63.1%', drawdown: '13.7%', expectancy: '+0.54R' },
+  { id: 'simple_mm', status: 'Watch', confidence: 'B-', winRate: '49.6%', drawdown: '9.1%', expectancy: '+0.28R' },
 ]
 
 const feedSeeds: FeedSeed[] = [
-  {
-    time: '09:10',
-    tone: 'good',
-    titleKey: 'strategyLab.feed.item1Title',
-    detailKey: 'strategyLab.feed.item1Detail',
-  },
-  {
-    time: '09:14',
-    tone: 'warn',
-    titleKey: 'strategyLab.feed.item2Title',
-    detailKey: 'strategyLab.feed.item2Detail',
-  },
-  {
-    time: '09:19',
-    tone: 'neutral',
-    titleKey: 'strategyLab.feed.item3Title',
-    detailKey: 'strategyLab.feed.item3Detail',
-  },
-  {
-    time: '09:22',
-    tone: 'neutral',
-    titleKey: 'strategyLab.feed.item4Title',
-    detailKey: 'strategyLab.feed.item4Detail',
-  },
+  { time: '09:10', tone: 'good', titleKey: 'strategyLab.feed.item1Title', detailKey: 'strategyLab.feed.item1Detail' },
+  { time: '09:14', tone: 'warn', titleKey: 'strategyLab.feed.item2Title', detailKey: 'strategyLab.feed.item2Detail' },
+  { time: '09:19', tone: 'neutral', titleKey: 'strategyLab.feed.item3Title', detailKey: 'strategyLab.feed.item3Detail' },
+  { time: '09:22', tone: 'neutral', titleKey: 'strategyLab.feed.item4Title', detailKey: 'strategyLab.feed.item4Detail' },
 ]
 
 function formatNumber(locale: string, value: number, options?: Intl.NumberFormatOptions) {
@@ -119,6 +72,7 @@ function formatNumber(locale: string, value: number, options?: Intl.NumberFormat
 
 function App() {
   const { locale, setLocale, t } = useI18n()
+  const [activeModule, setActiveModule] = useState<DashboardModule>('overview')
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [dexEnabled, setDexEnabled] = useState(false)
   const [tradeEnabled, setTradeEnabled] = useState(false)
@@ -180,11 +134,9 @@ function App() {
 
       await axios.post(`${API_BASE}/config`, payload)
       setStatus({ type: 'success', msg: t('common.saveSuccess') })
-
       setExecKey('')
       setBinanceKey('')
       setBinanceSecret('')
-
       fetchConfig()
       setTimeout(() => setStatus(null), 5000)
     } catch (err) {
@@ -227,6 +179,31 @@ function App() {
     detail: t(item.detailKey),
   }))
 
+  const moduleIconMap = {
+    overview: Activity,
+    orders: Wallet,
+    scanner: Waves,
+    logs: Radar,
+    strategies: CandlestickChart,
+    settings: ShieldCheck,
+  } satisfies Record<DashboardModule, typeof Activity>
+
+  const modules: Array<{
+    id: DashboardModule
+    label: string
+    description: string
+  }> = [
+    { id: 'overview', label: t('navigation.tabs.overview.label'), description: t('navigation.tabs.overview.description') },
+    { id: 'orders', label: t('navigation.tabs.orders.label'), description: t('navigation.tabs.orders.description') },
+    { id: 'scanner', label: t('navigation.tabs.scanner.label'), description: t('navigation.tabs.scanner.description') },
+    { id: 'logs', label: t('navigation.tabs.logs.label'), description: t('navigation.tabs.logs.description') },
+    { id: 'strategies', label: t('navigation.tabs.strategies.label'), description: t('navigation.tabs.strategies.description') },
+    { id: 'settings', label: t('navigation.tabs.settings.label'), description: t('navigation.tabs.settings.description') },
+  ]
+
+  const activeModuleMeta = modules.find((module) => module.id === activeModule) ?? modules[0]
+  const localeLabel = localeOptions.find((option) => option.code === locale)?.label ?? locale
+
   const overviewCards = [
     {
       label: t('overview.totalExecutionsLabel'),
@@ -251,10 +228,7 @@ function App() {
     },
     {
       label: t('overview.validatedStrategiesLabel'),
-      value: interpolate(t('common.validatedStrategiesValue'), {
-        validated: validatedCount,
-        total: strategySeeds.length,
-      }),
+      value: interpolate(t('common.validatedStrategiesValue'), { validated: validatedCount, total: strategySeeds.length }),
       meta: interpolate(t('common.watchCountMeta'), { count: watchCount }),
       accent: 'rose',
       icon: CandlestickChart,
@@ -283,6 +257,415 @@ function App() {
       tone: 'neutral',
     },
   ] as const
+
+  const headerSummary = [
+    {
+      label: t('navigation.activeModuleLabel'),
+      value: activeModuleMeta.label,
+    },
+    {
+      label: t('navigation.summaryExecutions'),
+      value: formatNumber(locale, safeMetrics.total_trades),
+    },
+    {
+      label: t('navigation.summaryStrategies'),
+      value: formatNumber(locale, strategySeeds.length),
+    },
+    {
+      label: t('navigation.summaryLocale'),
+      value: localeLabel,
+    },
+  ] as const
+
+  const renderOverviewModule = () => (
+    <section className="section-block">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">{t('overview.kicker')}</p>
+          <h2>{t('overview.title')}</h2>
+        </div>
+        <span className="section-tag">{t('common.liveMetrics')}</span>
+      </div>
+
+      <div className="overview-grid">
+        {overviewCards.map((card) => {
+          const Icon = card.icon
+
+          return (
+            <article key={card.label} className={`overview-card accent-${card.accent}`}>
+              <div className="overview-card-top">
+                <span>{card.label}</span>
+                <Icon size={18} />
+              </div>
+              <div className="overview-value">{card.value}</div>
+              <p>{card.meta}</p>
+            </article>
+          )
+        })}
+      </div>
+
+      <div className="signal-grid">
+        <article className="insight-panel">
+          <div className="panel-caption">{t('posture.title')}</div>
+          <div className="signal-stat-row">
+            <div>
+              <span className="signal-label">{t('posture.validated')}</span>
+              <strong>{formatNumber(locale, validatedCount)}</strong>
+            </div>
+            <div>
+              <span className="signal-label">{t('posture.watchlist')}</span>
+              <strong>{formatNumber(locale, watchCount)}</strong>
+            </div>
+            <div>
+              <span className="signal-label">{t('posture.tuning')}</span>
+              <strong>{formatNumber(locale, strategySeeds.length - validatedCount - watchCount)}</strong>
+            </div>
+          </div>
+          <div className="signal-bars">
+            <div className="signal-bar-row">
+              <span>{t('posture.validatedConfidence')}</span>
+              <div className="signal-bar">
+                <span style={{ width: '74%' }} />
+              </div>
+            </div>
+            <div className="signal-bar-row">
+              <span>{t('posture.executionReadiness')}</span>
+              <div className="signal-bar">
+                <span style={{ width: `${(readinessScore / 3) * 100}%` }} />
+              </div>
+            </div>
+            <div className="signal-bar-row">
+              <span>{t('posture.telemetryCoverage')}</span>
+              <div className="signal-bar">
+                <span style={{ width: '58%' }} />
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article className="insight-panel">
+          <div className="panel-caption">{t('posture.notesTitle')}</div>
+          <div className="checklist">
+            <div className="checklist-item">
+              <ShieldCheck size={16} />
+              <span>{t('posture.note1')}</span>
+            </div>
+            <div className="checklist-item">
+              <Bot size={16} />
+              <span>{t('posture.note2')}</span>
+            </div>
+            <div className="checklist-item">
+              <Layers3 size={16} />
+              <span>{t('posture.note3')}</span>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+  )
+
+  const renderStrategiesModule = () => (
+    <section className="section-block">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">{t('strategyLab.kicker')}</p>
+          <h2>{t('strategyLab.title')}</h2>
+        </div>
+        <span className="section-tag">{t('strategyLab.seededTag')}</span>
+      </div>
+
+      <div className="lab-layout">
+        <div className="strategy-board">
+          {strategySnapshots.map((strategy) => (
+            <article key={strategy.id} className="strategy-card">
+              <div className="strategy-card-top">
+                <div>
+                  <p className="strategy-market">{strategy.market}</p>
+                  <h3>{strategy.label}</h3>
+                </div>
+                <span className={`strategy-status status-${strategy.status.toLowerCase()}`}>{strategy.statusLabel}</span>
+              </div>
+
+              <p className="strategy-thesis">{strategy.thesis}</p>
+
+              <div className="strategy-metrics">
+                <div>
+                  <span>{t('strategyLab.confidence')}</span>
+                  <strong>{strategy.confidence}</strong>
+                </div>
+                <div>
+                  <span>{t('strategyLab.winRate')}</span>
+                  <strong>{strategy.winRate}</strong>
+                </div>
+                <div>
+                  <span>{t('strategyLab.drawdown')}</span>
+                  <strong>{strategy.drawdown}</strong>
+                </div>
+                <div>
+                  <span>{t('strategyLab.expectancy')}</span>
+                  <strong>{strategy.expectancy}</strong>
+                </div>
+              </div>
+
+              <div className="strategy-footer">
+                <span>{strategy.cadence}</span>
+                <span className="strategy-link">
+                  {t('common.reviewNext')}
+                  <ArrowUpRight size={14} />
+                </span>
+              </div>
+            </article>
+          ))}
+        </div>
+
+        <aside className="activity-panel">
+          <div className="panel-caption">{t('strategyLab.validationFeedTitle')}</div>
+          <div className="feed-list">
+            {verificationFeed.map((item) => (
+              <div key={`${item.time}-${item.titleKey}`} className="feed-item">
+                <div className={`feed-dot tone-${item.tone}`} />
+                <div>
+                  <div className="feed-item-top">
+                    <strong>{item.title}</strong>
+                    <span>{item.time}</span>
+                  </div>
+                  <p>{item.detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="activity-divider" />
+
+          <div className="panel-caption">{t('strategyLab.apiTargetsTitle')}</div>
+          <div className="target-list">
+            <div className="target-item">
+              <Cpu size={16} />
+              <span>{t('strategyLab.apiTargetOverview')}</span>
+            </div>
+            <div className="target-item">
+              <TimerReset size={16} />
+              <span>{t('strategyLab.apiTargetValidations')}</span>
+            </div>
+            <div className="target-item">
+              <Wallet size={16} />
+              <span>{t('strategyLab.apiTargetExecution')}</span>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  )
+
+  const renderSettingsModule = () => (
+    <section className="section-block settings-block">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">{t('settings.kicker')}</p>
+          <h2>{t('settings.title')}</h2>
+        </div>
+        <span className="section-tag">{t('settings.liveConfig')}</span>
+      </div>
+
+      <div className="settings-layout">
+        <div className="vault-panel">
+          <form onSubmit={handleSaveConfig} className="vault-form">
+            <div className="toggle-cluster">
+              <label className="toggle-row">
+                <div>
+                  <span className="toggle-title">{t('settings.dexSniperTitle')}</span>
+                  <span className="toggle-desc">{t('settings.dexSniperDesc')}</span>
+                </div>
+                <div className="toggle-control">
+                  <input type="checkbox" checked={dexEnabled} onChange={(e) => setDexEnabled(e.target.checked)} />
+                  <span className="switch" />
+                </div>
+              </label>
+
+              <label className="toggle-row">
+                <div>
+                  <span className="toggle-title">{t('settings.cexEngineTitle')}</span>
+                  <span className="toggle-desc">{t('settings.cexEngineDesc')}</span>
+                </div>
+                <div className="toggle-control">
+                  <input type="checkbox" checked={tradeEnabled} onChange={(e) => setTradeEnabled(e.target.checked)} />
+                  <span className="switch" />
+                </div>
+              </label>
+            </div>
+
+            <div className="vault-grid">
+              <label className="input-group">
+                <span>{t('settings.evmPrivateKey')}</span>
+                <div className="input-shell">
+                  <KeyRound className="input-icon" size={16} />
+                  <input
+                    className="vault-input"
+                    type="password"
+                    placeholder={hasPrivateKey ? t('settings.evmPlaceholderPresent') : t('settings.evmPlaceholderMissing')}
+                    value={execKey}
+                    onChange={(e) => setExecKey(e.target.value)}
+                    autoComplete="off"
+                  />
+                </div>
+              </label>
+
+              <label className="input-group">
+                <span>{t('settings.tradeBudget')}</span>
+                <div className="input-shell">
+                  <Wallet className="input-icon" size={16} />
+                  <input
+                    className="vault-input"
+                    type="text"
+                    placeholder={t('settings.tradeBudgetPlaceholder')}
+                    value={tradeUsdt}
+                    onChange={(e) => setTradeUsdt(e.target.value)}
+                    autoComplete="off"
+                  />
+                </div>
+              </label>
+
+              <label className="input-group">
+                <span>{t('settings.binanceApiKey')}</span>
+                <div className="input-shell">
+                  <Fingerprint className="input-icon" size={16} />
+                  <input
+                    className="vault-input"
+                    type="password"
+                    placeholder={t('settings.binanceApiKeyPlaceholder')}
+                    value={binanceKey}
+                    onChange={(e) => setBinanceKey(e.target.value)}
+                    autoComplete="off"
+                  />
+                </div>
+              </label>
+
+              <label className="input-group">
+                <span>{t('settings.binanceApiSecret')}</span>
+                <div className="input-shell">
+                  <Lock className="input-icon" size={16} />
+                  <input
+                    className="vault-input"
+                    type="password"
+                    placeholder={t('settings.binanceApiSecretPlaceholder')}
+                    value={binanceSecret}
+                    onChange={(e) => setBinanceSecret(e.target.value)}
+                    autoComplete="off"
+                  />
+                </div>
+              </label>
+            </div>
+
+            <button type="submit" className="save-button" disabled={saving}>
+              {saving ? (
+                t('settings.saveSaving')
+              ) : (
+                <>
+                  <Save size={18} />
+                  {t('settings.saveIdle')}
+                </>
+              )}
+            </button>
+
+            {status && (
+              <div className={`status-alert ${status.type}`}>
+                {status.type === 'success' ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
+                <span>{status.msg}</span>
+              </div>
+            )}
+          </form>
+        </div>
+
+        <aside className="operations-panel">
+          <div className="ops-card">
+            <div className="panel-caption">{t('settings.operationalPostureTitle')}</div>
+            <div className="ops-state-list">
+              <div className="ops-state">
+                <ShieldCheck size={16} />
+                <div>
+                  <strong>{t('settings.vaultIsolationTitle')}</strong>
+                  <span>{hasPrivateKey ? t('settings.vaultIsolationConfigured') : t('settings.vaultIsolationMissing')}</span>
+                </div>
+              </div>
+              <div className="ops-state">
+                <Bot size={16} />
+                <div>
+                  <strong>{t('settings.strategyExecutionTitle')}</strong>
+                  <span>{tradeEnabled ? t('settings.strategyExecutionEnabled') : t('settings.strategyExecutionStandby')}</span>
+                </div>
+              </div>
+              <div className="ops-state">
+                <Waves size={16} />
+                <div>
+                  <strong>{t('settings.onchainPostureTitle')}</strong>
+                  <span>{dexEnabled ? t('settings.onchainPostureEnabled') : t('settings.onchainPostureStandby')}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="ops-card">
+            <div className="panel-caption">{t('settings.nextPhaseTitle')}</div>
+            <div className="phase-list">
+              <div className="phase-item">
+                <span>01</span>
+                <p>{t('settings.phase1')}</p>
+              </div>
+              <div className="phase-item">
+                <span>02</span>
+                <p>{t('settings.phase2')}</p>
+              </div>
+              <div className="phase-item">
+                <span>03</span>
+                <p>{t('settings.phase3')}</p>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  )
+
+  const renderPlaceholderModule = (moduleId: 'orders' | 'scanner' | 'logs') => {
+    const Icon = moduleIconMap[moduleId]
+
+    return (
+      <section className="section-block module-placeholder-block">
+        <div className="section-heading">
+          <div>
+            <p className="section-kicker">{t(`navigation.tabs.${moduleId}.label`)}</p>
+            <h2>{t(`navigation.placeholders.${moduleId}.title`)}</h2>
+          </div>
+          <span className="section-tag">{t(`navigation.tabs.${moduleId}.description`)}</span>
+        </div>
+
+        <div className="module-placeholder-grid">
+          <article className="placeholder-lead">
+            <div className="placeholder-icon-shell">
+              <Icon size={20} />
+            </div>
+            <p className="placeholder-lead-copy">{t(`navigation.placeholders.${moduleId}.description`)}</p>
+          </article>
+
+          <article className="placeholder-card">
+            <div className="panel-caption">Phase 2</div>
+            <ul className="placeholder-list">
+              <li>{t(`navigation.placeholders.${moduleId}.point1`)}</li>
+              <li>{t(`navigation.placeholders.${moduleId}.point2`)}</li>
+              <li>{t(`navigation.placeholders.${moduleId}.point3`)}</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+    )
+  }
+
+  const renderModuleContent = () => {
+    if (activeModule === 'overview') return renderOverviewModule()
+    if (activeModule === 'strategies') return renderStrategiesModule()
+    if (activeModule === 'settings') return renderSettingsModule()
+    return renderPlaceholderModule(activeModule)
+  }
 
   return (
     <div className="app-shell">
@@ -323,6 +706,12 @@ function App() {
             </div>
 
             <p className="hero-copy">{t('hero.copy')}</p>
+
+            <div className="hero-merge-card">
+              <p className="hero-merge-kicker">{t('navigation.kicker')}</p>
+              <h2 className="hero-merge-title">{t('navigation.title')}</h2>
+              <p className="hero-merge-copy">{t('navigation.description')}</p>
+            </div>
 
             <div className="hero-strip">
               <div className="hero-strip-item">
@@ -366,348 +755,42 @@ function App() {
           </aside>
         </section>
 
-        <section className="section-block">
-          <div className="section-heading">
-            <div>
-              <p className="section-kicker">{t('overview.kicker')}</p>
-              <h2>{t('overview.title')}</h2>
-            </div>
-            <span className="section-tag">{t('common.liveMetrics')}</span>
+        <section className="section-block module-shell">
+          <div className="module-summary-grid">
+            {headerSummary.map((item) => (
+              <article key={item.label} className="module-summary-card">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </article>
+            ))}
           </div>
 
-          <div className="overview-grid">
-            {overviewCards.map((card) => {
-              const Icon = card.icon
+          <div className="module-nav">
+            {modules.map((module) => {
+              const Icon = moduleIconMap[module.id]
+              const isActive = module.id === activeModule
 
               return (
-                <article key={card.label} className={`overview-card accent-${card.accent}`}>
-                  <div className="overview-card-top">
-                    <span>{card.label}</span>
-                    <Icon size={18} />
+                <button
+                  key={module.id}
+                  type="button"
+                  className={`module-tab ${isActive ? 'active' : ''}`}
+                  onClick={() => setActiveModule(module.id)}
+                >
+                  <div className="module-tab-top">
+                    <span className="module-tab-icon">
+                      <Icon size={16} />
+                    </span>
+                    <span className="module-tab-label">{module.label}</span>
                   </div>
-                  <div className="overview-value">{card.value}</div>
-                  <p>{card.meta}</p>
-                </article>
+                  <p className="module-tab-description">{module.description}</p>
+                </button>
               )
             })}
           </div>
-
-          <div className="signal-grid">
-            <article className="insight-panel">
-              <div className="panel-caption">{t('posture.title')}</div>
-              <div className="signal-stat-row">
-                <div>
-                  <span className="signal-label">{t('posture.validated')}</span>
-                  <strong>{formatNumber(locale, validatedCount)}</strong>
-                </div>
-                <div>
-                  <span className="signal-label">{t('posture.watchlist')}</span>
-                  <strong>{formatNumber(locale, watchCount)}</strong>
-                </div>
-                <div>
-                  <span className="signal-label">{t('posture.tuning')}</span>
-                  <strong>{formatNumber(locale, strategySeeds.length - validatedCount - watchCount)}</strong>
-                </div>
-              </div>
-              <div className="signal-bars">
-                <div className="signal-bar-row">
-                  <span>{t('posture.validatedConfidence')}</span>
-                  <div className="signal-bar">
-                    <span style={{ width: '74%' }} />
-                  </div>
-                </div>
-                <div className="signal-bar-row">
-                  <span>{t('posture.executionReadiness')}</span>
-                  <div className="signal-bar">
-                    <span style={{ width: `${(readinessScore / 3) * 100}%` }} />
-                  </div>
-                </div>
-                <div className="signal-bar-row">
-                  <span>{t('posture.telemetryCoverage')}</span>
-                  <div className="signal-bar">
-                    <span style={{ width: '58%' }} />
-                  </div>
-                </div>
-              </div>
-            </article>
-
-            <article className="insight-panel">
-              <div className="panel-caption">{t('posture.notesTitle')}</div>
-              <div className="checklist">
-                <div className="checklist-item">
-                  <ShieldCheck size={16} />
-                  <span>{t('posture.note1')}</span>
-                </div>
-                <div className="checklist-item">
-                  <Bot size={16} />
-                  <span>{t('posture.note2')}</span>
-                </div>
-                <div className="checklist-item">
-                  <Layers3 size={16} />
-                  <span>{t('posture.note3')}</span>
-                </div>
-              </div>
-            </article>
-          </div>
         </section>
 
-        <section className="section-block">
-          <div className="section-heading">
-            <div>
-              <p className="section-kicker">{t('strategyLab.kicker')}</p>
-              <h2>{t('strategyLab.title')}</h2>
-            </div>
-            <span className="section-tag">{t('strategyLab.seededTag')}</span>
-          </div>
-
-          <div className="lab-layout">
-            <div className="strategy-board">
-              {strategySnapshots.map((strategy) => (
-                <article key={strategy.id} className="strategy-card">
-                  <div className="strategy-card-top">
-                    <div>
-                      <p className="strategy-market">{strategy.market}</p>
-                      <h3>{strategy.label}</h3>
-                    </div>
-                    <span className={`strategy-status status-${strategy.status.toLowerCase()}`}>{strategy.statusLabel}</span>
-                  </div>
-
-                  <p className="strategy-thesis">{strategy.thesis}</p>
-
-                  <div className="strategy-metrics">
-                    <div>
-                      <span>{t('strategyLab.confidence')}</span>
-                      <strong>{strategy.confidence}</strong>
-                    </div>
-                    <div>
-                      <span>{t('strategyLab.winRate')}</span>
-                      <strong>{strategy.winRate}</strong>
-                    </div>
-                    <div>
-                      <span>{t('strategyLab.drawdown')}</span>
-                      <strong>{strategy.drawdown}</strong>
-                    </div>
-                    <div>
-                      <span>{t('strategyLab.expectancy')}</span>
-                      <strong>{strategy.expectancy}</strong>
-                    </div>
-                  </div>
-
-                  <div className="strategy-footer">
-                    <span>{strategy.cadence}</span>
-                    <span className="strategy-link">
-                      {t('common.reviewNext')}
-                      <ArrowUpRight size={14} />
-                    </span>
-                  </div>
-                </article>
-              ))}
-            </div>
-
-            <aside className="activity-panel">
-              <div className="panel-caption">{t('strategyLab.validationFeedTitle')}</div>
-              <div className="feed-list">
-                {verificationFeed.map((item) => (
-                  <div key={`${item.time}-${item.titleKey}`} className="feed-item">
-                    <div className={`feed-dot tone-${item.tone}`} />
-                    <div>
-                      <div className="feed-item-top">
-                        <strong>{item.title}</strong>
-                        <span>{item.time}</span>
-                      </div>
-                      <p>{item.detail}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="activity-divider" />
-
-              <div className="panel-caption">{t('strategyLab.apiTargetsTitle')}</div>
-              <div className="target-list">
-                <div className="target-item">
-                  <Cpu size={16} />
-                  <span>{t('strategyLab.apiTargetOverview')}</span>
-                </div>
-                <div className="target-item">
-                  <TimerReset size={16} />
-                  <span>{t('strategyLab.apiTargetValidations')}</span>
-                </div>
-                <div className="target-item">
-                  <Wallet size={16} />
-                  <span>{t('strategyLab.apiTargetExecution')}</span>
-                </div>
-              </div>
-            </aside>
-          </div>
-        </section>
-
-        <section className="section-block settings-block">
-          <div className="section-heading">
-            <div>
-              <p className="section-kicker">{t('settings.kicker')}</p>
-              <h2>{t('settings.title')}</h2>
-            </div>
-            <span className="section-tag">{t('settings.liveConfig')}</span>
-          </div>
-
-          <div className="settings-layout">
-            <div className="vault-panel">
-              <form onSubmit={handleSaveConfig} className="vault-form">
-                <div className="toggle-cluster">
-                  <label className="toggle-row">
-                    <div>
-                      <span className="toggle-title">{t('settings.dexSniperTitle')}</span>
-                      <span className="toggle-desc">{t('settings.dexSniperDesc')}</span>
-                    </div>
-                    <div className="toggle-control">
-                      <input type="checkbox" checked={dexEnabled} onChange={(e) => setDexEnabled(e.target.checked)} />
-                      <span className="switch" />
-                    </div>
-                  </label>
-
-                  <label className="toggle-row">
-                    <div>
-                      <span className="toggle-title">{t('settings.cexEngineTitle')}</span>
-                      <span className="toggle-desc">{t('settings.cexEngineDesc')}</span>
-                    </div>
-                    <div className="toggle-control">
-                      <input type="checkbox" checked={tradeEnabled} onChange={(e) => setTradeEnabled(e.target.checked)} />
-                      <span className="switch" />
-                    </div>
-                  </label>
-                </div>
-
-                <div className="vault-grid">
-                  <label className="input-group">
-                    <span>{t('settings.evmPrivateKey')}</span>
-                    <div className="input-shell">
-                      <KeyRound className="input-icon" size={16} />
-                      <input
-                        className="vault-input"
-                        type="password"
-                        placeholder={hasPrivateKey ? t('settings.evmPlaceholderPresent') : t('settings.evmPlaceholderMissing')}
-                        value={execKey}
-                        onChange={(e) => setExecKey(e.target.value)}
-                        autoComplete="off"
-                      />
-                    </div>
-                  </label>
-
-                  <label className="input-group">
-                    <span>{t('settings.tradeBudget')}</span>
-                    <div className="input-shell">
-                      <Wallet className="input-icon" size={16} />
-                      <input
-                        className="vault-input"
-                        type="text"
-                        placeholder={t('settings.tradeBudgetPlaceholder')}
-                        value={tradeUsdt}
-                        onChange={(e) => setTradeUsdt(e.target.value)}
-                        autoComplete="off"
-                      />
-                    </div>
-                  </label>
-
-                  <label className="input-group">
-                    <span>{t('settings.binanceApiKey')}</span>
-                    <div className="input-shell">
-                      <Fingerprint className="input-icon" size={16} />
-                      <input
-                        className="vault-input"
-                        type="password"
-                        placeholder={t('settings.binanceApiKeyPlaceholder')}
-                        value={binanceKey}
-                        onChange={(e) => setBinanceKey(e.target.value)}
-                        autoComplete="off"
-                      />
-                    </div>
-                  </label>
-
-                  <label className="input-group">
-                    <span>{t('settings.binanceApiSecret')}</span>
-                    <div className="input-shell">
-                      <Lock className="input-icon" size={16} />
-                      <input
-                        className="vault-input"
-                        type="password"
-                        placeholder={t('settings.binanceApiSecretPlaceholder')}
-                        value={binanceSecret}
-                        onChange={(e) => setBinanceSecret(e.target.value)}
-                        autoComplete="off"
-                      />
-                    </div>
-                  </label>
-                </div>
-
-                <button type="submit" className="save-button" disabled={saving}>
-                  {saving ? (
-                    t('settings.saveSaving')
-                  ) : (
-                    <>
-                      <Save size={18} />
-                      {t('settings.saveIdle')}
-                    </>
-                  )}
-                </button>
-
-                {status && (
-                  <div className={`status-alert ${status.type}`}>
-                    {status.type === 'success' ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
-                    <span>{status.msg}</span>
-                  </div>
-                )}
-              </form>
-            </div>
-
-            <aside className="operations-panel">
-              <div className="ops-card">
-                <div className="panel-caption">{t('settings.operationalPostureTitle')}</div>
-                <div className="ops-state-list">
-                  <div className="ops-state">
-                    <ShieldCheck size={16} />
-                    <div>
-                      <strong>{t('settings.vaultIsolationTitle')}</strong>
-                      <span>{hasPrivateKey ? t('settings.vaultIsolationConfigured') : t('settings.vaultIsolationMissing')}</span>
-                    </div>
-                  </div>
-                  <div className="ops-state">
-                    <Bot size={16} />
-                    <div>
-                      <strong>{t('settings.strategyExecutionTitle')}</strong>
-                      <span>{tradeEnabled ? t('settings.strategyExecutionEnabled') : t('settings.strategyExecutionStandby')}</span>
-                    </div>
-                  </div>
-                  <div className="ops-state">
-                    <Waves size={16} />
-                    <div>
-                      <strong>{t('settings.onchainPostureTitle')}</strong>
-                      <span>{dexEnabled ? t('settings.onchainPostureEnabled') : t('settings.onchainPostureStandby')}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="ops-card">
-                <div className="panel-caption">{t('settings.nextPhaseTitle')}</div>
-                <div className="phase-list">
-                  <div className="phase-item">
-                    <span>01</span>
-                    <p>{t('settings.phase1')}</p>
-                  </div>
-                  <div className="phase-item">
-                    <span>02</span>
-                    <p>{t('settings.phase2')}</p>
-                  </div>
-                  <div className="phase-item">
-                    <span>03</span>
-                    <p>{t('settings.phase3')}</p>
-                  </div>
-                </div>
-              </div>
-            </aside>
-          </div>
-        </section>
+        {renderModuleContent()}
       </div>
     </div>
   )
