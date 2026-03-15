@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bot/api"
+	"bot/config"
+	"bot/database"
+	"bot/types"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -23,7 +27,7 @@ import (
 
 // ================== 环境变量 ==================
 func mustEnv(key string) string {
-	v := GetConfig(key)
+	v := config.GetConfig(key)
 	if v == "" {
 		slog.Error("环境变量未设置", "key", key)
 		os.Exit(1)
@@ -89,14 +93,6 @@ var (
 	topicTransfer      = crypto.Keccak256Hash([]byte("Transfer(address,address,uint256)"))
 )
 
-// ── DEX 版本 ──────────────────────────────────────────────
-type DEXVersion string
-
-const (
-	DEXv2 DEXVersion = "V2"
-	DEXv3 DEXVersion = "V3"
-)
-
 // ── DEX Router 白名单 ─────────────────────────────────────
 var dexRouters = map[string]struct{}{
 	"0x10ed43c718714eb63d5aa57b78b54704e256024e": {}, // PancakeSwap V2
@@ -133,21 +129,6 @@ type leaderboardResp struct {
 		} `json:"data"`
 		Pages int `json:"pages"`
 	} `json:"data"`
-}
-
-type TokenInfo struct {
-	Address      string
-	Symbol       string
-	Name         string
-	PoolAddress  string
-	LiquidityBNB float64
-	LiquidityUSD float64
-	CreatedBlock uint64
-	CreatedAt    time.Time
-	SmartBuys    int
-	HitWallets   map[string]string // address → label
-	DEX          DEXVersion
-	FeeTier      uint32 // V3 手续费档位，V2 为 0
 }
 
 // ================== 全局变量 ==================
@@ -278,7 +259,7 @@ func main() {
 	})))
 
 	// 全局最先初始化数据库
-	initDB()
+	database.InitDB()
 
 	// Phase 4.2 检查是否通过命令行参数启动回测模式
 	if len(os.Args) > 1 && os.Args[1] == "backtest" {
@@ -367,7 +348,7 @@ func main() {
 	startAlphaEngine()
 
 	// 启动 Phase 5: React Dashboard API 服务器
-	go StartAPIServer()
+	go api.StartAPIServer()
 
 	// 启动交易引擎 (支持模拟测试或真实下单)
 	go startTradingEngine()
@@ -487,7 +468,7 @@ func handleV2PairCreated(lg gethtypes.Log) {
 		return
 	}
 	poolAddr := strings.ToLower(common.BytesToAddress(lg.Data[:32]).Hex())
-	processNewPool(tokenAddr, poolAddr, DEXv2, 0, isToken0WBNB, lg.BlockNumber)
+	processNewPool(tokenAddr, poolAddr, types.DEXv2, 0, isToken0WBNB, lg.BlockNumber)
 }
 
 // ================== V3 事件处理 ==================
@@ -516,11 +497,11 @@ func handleV3PoolCreated(lg gethtypes.Log) {
 		return
 	}
 	poolAddr := strings.ToLower(common.BytesToAddress(lg.Data[32:64]).Hex())
-	processNewPool(tokenAddr, poolAddr, DEXv3, feeTier, isToken0WBNB, lg.BlockNumber)
+	processNewPool(tokenAddr, poolAddr, types.DEXv3, feeTier, isToken0WBNB, lg.BlockNumber)
 }
 
 // ================== 公共处理逻辑 ==================
-func processNewPool(tokenAddr, poolAddr string, dex DEXVersion, feeTier uint32, isToken0WBNB bool, blockNum uint64) {
+func processNewPool(tokenAddr, poolAddr string, dex types.DEXVersion, feeTier uint32, isToken0WBNB bool, blockNum uint64) {
 	seenMu.Lock()
 	if last, exists := seen[tokenAddr]; exists && time.Since(last) < seenTTL {
 		seenMu.Unlock()
@@ -538,7 +519,7 @@ func processNewPool(tokenAddr, poolAddr string, dex DEXVersion, feeTier uint32, 
 	}
 
 	log := slog.With("dex", dex, "symbol", symbol, "token", tokenAddr, "pool", poolAddr, "block", blockNum)
-	if dex == DEXv3 {
+	if dex == types.DEXv3 {
 		log = log.With("fee", feeStr)
 	}
 	log.Info("🆕 新 Pool 创建")
@@ -569,7 +550,7 @@ func processNewPool(tokenAddr, poolAddr string, dex DEXVersion, feeTier uint32, 
 		return
 	}
 
-	info := TokenInfo{
+	info := types.TokenInfo{
 		Address:      tokenAddr,
 		Symbol:       symbol,
 		Name:         name,
@@ -585,7 +566,7 @@ func processNewPool(tokenAddr, poolAddr string, dex DEXVersion, feeTier uint32, 
 	}
 
 	sendDiscordAlert(info)
-	saveTokenToDB(info)
+	database.SaveTokenToDB(info)
 	log.Info("✅ 预警已发送并入库", "smartBuys", len(hitWallets), "liqBNB", fmt.Sprintf("%.2f", liqBNB))
 
 	// 自动狙击 (如果满足安全与配置条件，由引擎内部进行实盘执行)
@@ -593,12 +574,12 @@ func processNewPool(tokenAddr, poolAddr string, dex DEXVersion, feeTier uint32, 
 }
 
 // ================== 流动性轮询 ==================
-func pollLiquidityBNB(poolAddr string, dex DEXVersion, isToken0WBNB bool) (float64, error) {
+func pollLiquidityBNB(poolAddr string, dex types.DEXVersion, isToken0WBNB bool) (float64, error) {
 	deadline := time.Now().Add(liqPollTimeout)
 	for time.Now().Before(deadline) {
 		var liq float64
 		var err error
-		if dex == DEXv2 {
+		if dex == types.DEXv2 {
 			liq, err = fetchV2LiquidityBNB(poolAddr, isToken0WBNB)
 		} else {
 			liq, err = fetchV3LiquidityBNB(poolAddr, isToken0WBNB)
@@ -608,7 +589,7 @@ func pollLiquidityBNB(poolAddr string, dex DEXVersion, isToken0WBNB bool) (float
 		}
 		time.Sleep(liqPollInterval)
 	}
-	if dex == DEXv2 {
+	if dex == types.DEXv2 {
 		return fetchV2LiquidityBNB(poolAddr, isToken0WBNB)
 	}
 	return fetchV3LiquidityBNB(poolAddr, isToken0WBNB)
@@ -764,7 +745,7 @@ func countSmartBuys(tokenAddr, poolAddr string, createdBlock uint64) (map[string
 				hitWallets[toAddr] = label
 
 				// 记录交互轨迹到数据库
-				recordSmartWalletTrade(toAddr, tokenAddr, "BUY", lg.BlockNumber)
+				database.RecordSmartWalletTrade(toAddr, tokenAddr, "BUY", lg.BlockNumber)
 
 				slog.Info("🧠 聪明钱命中",
 					"token", tokenAddr, "wallet", toAddr,
@@ -862,10 +843,10 @@ func refreshLeaderboard() error {
 	}
 
 	// Phase 3: 同步抓取的聪明钱到数据库
-	syncSmartWalletsToDB(newWallets)
+	database.SyncSmartWalletsToDB(newWallets)
 
 	// 从数据库中加载过滤掉 MEV 且分数合格的聪明钱
-	filteredWallets := getFilteredSmartWallets()
+	filteredWallets := database.GetFilteredSmartWallets()
 	if filteredWallets == nil || len(filteredWallets) == 0 {
 		filteredWallets = newWallets // 降级处理
 	}
@@ -968,7 +949,7 @@ func pingDiscord() error {
 	return nil
 }
 
-func sendDiscordAlert(t TokenInfo) {
+func sendDiscordAlert(t types.TokenInfo) {
 	ageMin := int64(time.Since(t.CreatedAt).Minutes())
 
 	walletLines := make([]string, 0, len(t.HitWallets))
@@ -984,7 +965,7 @@ func sendDiscordAlert(t TokenInfo) {
 	}
 
 	dexLabel := fmt.Sprintf("PancakeSwap %s", t.DEX)
-	if t.DEX == DEXv3 && t.FeeTier > 0 {
+	if t.DEX == types.DEXv3 && t.FeeTier > 0 {
 		if label, ok := v3FeeLabel[t.FeeTier]; ok {
 			dexLabel += fmt.Sprintf(" (%s)", label)
 		}

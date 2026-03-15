@@ -1,6 +1,8 @@
-package main
+package api
 
 import (
+	"bot/config"
+	"bot/database"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -27,13 +29,13 @@ func StartAPIServer() {
 	mux.HandleFunc("/api/config", cors(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			// 为了安全，GET 时不在接口中明文返回 PrivateKey 等高度敏感信息，只返回其是否已配置的状态
-			hasKey := GetConfig("EXECUTION_PRIVATE_KEY") != ""
-			
+			hasKey := config.GetConfig("EXECUTION_PRIVATE_KEY") != ""
+
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"dex_sniper_enabled": GetConfig("DEX_SNIPER_ENABLED") == "true",
-				"trade_enabled":      GetConfig("TRADE_ENABLED") == "true",
+				"dex_sniper_enabled": config.GetConfig("DEX_SNIPER_ENABLED") == "true",
+				"trade_enabled":      config.GetConfig("TRADE_ENABLED") == "true",
 				"has_private_key":    hasKey,
-				"trade_usdt":         GetConfig("TRADE_USDT"),
+				"trade_usdt":         config.GetConfig("TRADE_USDT"),
 			})
 			return
 		}
@@ -44,7 +46,7 @@ func StartAPIServer() {
 				for k, v := range payload {
 					// 只有非空值才更新
 					if v != "" {
-						SetConfig(k, v)
+						config.SetConfig(k, v)
 					}
 				}
 				json.NewEncoder(w).Encode(map[string]string{"status": "success", "msg": "配置已加密并安全入库"})
@@ -57,11 +59,11 @@ func StartAPIServer() {
 		var totalTrades int64
 		var winTrades int64
 		var activeTokens int64
-		
-		if db != nil {
-			db.Model(&TradeHistory{}).Count(&totalTrades)
-			db.Model(&TradeHistory{}).Where("pn_l > 0").Count(&winTrades)
-			db.Model(&Token{}).Count(&activeTokens)
+
+		if database.DB != nil {
+			database.DB.Model(&database.TradeHistory{}).Count(&totalTrades)
+			database.DB.Model(&database.TradeHistory{}).Where("pn_l > 0").Count(&winTrades)
+			database.DB.Model(&database.Token{}).Count(&activeTokens)
 		}
 
 		winRate := 0.0

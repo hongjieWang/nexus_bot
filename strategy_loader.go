@@ -30,11 +30,11 @@ func LoadStrategies(filepath string) ([]strategy.BaseStrategy, error) {
 	var strats []strategy.BaseStrategy
 	for _, cfg := range configs {
 		var s strategy.BaseStrategy
-		
+
 		switch cfg.Type {
 		case "ema_macd_rsi":
 			s = strategy.NewEmaMacdRsiStrategy(cfg.ID)
-		
+
 		case "momentum_breakout":
 			lookback := getInt(cfg.Params, "lookback", 20)
 			breakoutThresholdBps := getFloat(cfg.Params, "breakoutThresholdBps", 50.0)
@@ -42,24 +42,24 @@ func LoadStrategies(filepath string) ([]strategy.BaseStrategy, error) {
 			trailingStopBps := getFloat(cfg.Params, "trailingStopBps", 30.0)
 			size := getFloat(cfg.Params, "size", 0)
 			s = strategy.NewMomentumBreakoutStrategy(cfg.ID, lookback, breakoutThresholdBps, volumeSurgeMult, trailingStopBps, size)
-			
+
 		case "simple_mm":
 			spreadBps := getFloat(cfg.Params, "spreadBps", 20.0)
 			size := getFloat(cfg.Params, "size", 0.05)
 			s = strategy.NewSimpleMMStrategy(cfg.ID, spreadBps, size)
-			
+
 		case "grid_mm":
 			gridSpacingBps := getFloat(cfg.Params, "gridSpacingBps", 20.0)
 			numLevels := getInt(cfg.Params, "numLevels", 3)
 			sizePerLevel := getFloat(cfg.Params, "sizePerLevel", 0.05)
 			maxPosition := getFloat(cfg.Params, "maxPosition", 0.15)
 			s = strategy.NewGridMMStrategy(cfg.ID, gridSpacingBps, numLevels, sizePerLevel, maxPosition)
-			
+
 		default:
 			slog.Warn("未知的策略类型，将跳过加载", "type", cfg.Type, "id", cfg.ID)
 			continue
 		}
-		
+
 		strats = append(strats, s)
 		slog.Info("✅ 成功加载策略配置", "id", cfg.ID, "type", cfg.Type)
 	}

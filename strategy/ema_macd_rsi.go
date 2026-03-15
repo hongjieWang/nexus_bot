@@ -134,7 +134,7 @@ func rsi14(data []float64) []float64 {
 		result[period] = 100 - 100/(1+(avgGain/avgLoss))
 	}
 
-	for i := period+1; i < len(data); i++ {
+	for i := period + 1; i < len(data); i++ {
 		diff := data[i] - data[i-1]
 		gain, loss := 0.0, 0.0
 		if diff > 0 {
@@ -195,7 +195,7 @@ func atr14(highs, lows, closes []float64) []float64 {
 		sum += trueRanges[i]
 	}
 	result[period] = sum / float64(period)
-	for i := period+1; i < n; i++ {
+	for i := period + 1; i < n; i++ {
 		result[i] = (result[i-1]*float64(period-1) + trueRanges[i]) / float64(period)
 	}
 	return result

@@ -1,6 +1,7 @@
-package main
+package config
 
 import (
+	"bot/database"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -68,10 +69,10 @@ func Decrypt(text string) (string, error) {
 
 // GetConfig 优先从数据库读取解密后的配置，如果没有则回退读取环境变量
 func GetConfig(key string) string {
-	if db != nil {
-		var cfg SystemConfig
+	if database.DB != nil {
+		var cfg database.SystemConfig
 		// 使用 Session 临时禁用日志，避免 record not found 刷屏
-		err := db.Session(&gorm.Session{Logger: db.Logger.LogMode(1)}).First(&cfg, "id = ?", key).Error
+		err := database.DB.Session(&gorm.Session{Logger: database.DB.Logger.LogMode(1)}).First(&cfg, "id = ?", key).Error
 		if err == nil {
 			dec, err := Decrypt(cfg.Value)
 			if err == nil {
@@ -84,13 +85,13 @@ func GetConfig(key string) string {
 
 // SetConfig 接收前端面板的明文配置，加密后安全存入数据库
 func SetConfig(key, value string) error {
-	if db == nil {
+	if database.DB == nil {
 		return fmt.Errorf("数据库未初始化")
 	}
 	enc, err := Encrypt(value)
 	if err != nil {
 		return err
 	}
-	cfg := SystemConfig{ID: key, Value: enc}
-	return db.Save(&cfg).Error
+	cfg := database.SystemConfig{ID: key, Value: enc}
+	return database.DB.Save(&cfg).Error
 }

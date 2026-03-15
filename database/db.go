@@ -1,6 +1,7 @@
-package main
+package database
 
 import (
+	"bot/types"
 	"log/slog"
 	"os"
 	"time"
@@ -10,7 +11,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-var db *gorm.DB
+var DB *gorm.DB
 
 // Token 模型：记录扫描到的 DEX 代币信息
 type Token struct {
@@ -74,7 +75,7 @@ type SystemConfig struct {
 	Value string `gorm:"type:text"` // 存储加密后的敏感信息
 }
 
-func initDB() {
+func InitDB() {
 	dsn := os.Getenv("MYSQL_DSN")
 	if dsn == "" {
 		slog.Warn("MYSQL_DSN 未设置，数据库记录功能已禁用")
@@ -82,7 +83,7 @@ func initDB() {
 	}
 
 	var err error
-	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
+	DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
 	})
 	if err != nil {
@@ -91,7 +92,7 @@ func initDB() {
 	}
 
 	// 自动迁移模式，确保表结构与结构体一致
-	err = db.AutoMigrate(&Token{}, &TradeHistory{}, &SmartWallet{}, &SmartWalletTrade{}, &SystemConfig{})
+	err = DB.AutoMigrate(&Token{}, &TradeHistory{}, &SmartWallet{}, &SmartWalletTrade{}, &SystemConfig{})
 	if err != nil {
 		slog.Error("MySQL 表结构迁移失败", "err", err)
 		return
@@ -101,8 +102,8 @@ func initDB() {
 }
 
 // syncSmartWalletsToDB 同步最新获取的聪明钱列表到数据库，支持 MEV 过滤
-func syncSmartWalletsToDB(wallets map[string]string) {
-	if db == nil {
+func SyncSmartWalletsToDB(wallets map[string]string) {
+	if DB == nil {
 		return
 	}
 
@@ -114,9 +115,9 @@ func syncSmartWalletsToDB(wallets map[string]string) {
 			Score:   50.0,
 		}
 		// 如果不存在则插入，存在则更新 Label
-		if err := db.Where(SmartWallet{Address: addr}).FirstOrCreate(&wallet).Error; err == nil {
+		if err := DB.Where(SmartWallet{Address: addr}).FirstOrCreate(&wallet).Error; err == nil {
 			if wallet.Label != label {
-				db.Model(&wallet).Update("Label", label)
+				DB.Model(&wallet).Update("Label", label)
 			}
 			count++
 		}
@@ -125,8 +126,8 @@ func syncSmartWalletsToDB(wallets map[string]string) {
 }
 
 // recordSmartWalletTrade 记录聪明钱交互轨迹
-func recordSmartWalletTrade(walletAddr, tokenAddr, action string, blockNum uint64) {
-	if db == nil {
+func RecordSmartWalletTrade(walletAddr, tokenAddr, action string, blockNum uint64) {
+	if DB == nil {
 		return
 	}
 	trade := SmartWalletTrade{
@@ -135,18 +136,18 @@ func recordSmartWalletTrade(walletAddr, tokenAddr, action string, blockNum uint6
 		Action:       action,
 		BlockNum:     blockNum,
 	}
-	db.Create(&trade)
+	DB.Create(&trade)
 }
 
 // getFilteredSmartWallets 获取高分且非 MEV 的聪明钱地址列表
-func getFilteredSmartWallets() map[string]string {
-	if db == nil {
+func GetFilteredSmartWallets() map[string]string {
+	if DB == nil {
 		return nil
 	}
-	
+
 	var wallets []SmartWallet
 	// 过滤掉被标记为 MEV 的机器人，并可以设定分数阈值 (例如 Score > 20)
-	if err := db.Where("is_mev = ? AND score > ?", false, 20.0).Find(&wallets).Error; err != nil {
+	if err := DB.Where("is_mev = ? AND score > ?", false, 20.0).Find(&wallets).Error; err != nil {
 		return nil
 	}
 
@@ -158,8 +159,8 @@ func getFilteredSmartWallets() map[string]string {
 }
 
 // logTradeToDB 记录交易到 MySQL (兼容之前 trading.go 的调用)
-func logTradeToDB(symbol, strategyID, side string, qty, entryPrice, exitPrice, pnl, balance float64, openedAt, closedAt time.Time, isSimulated bool) {
-	if db == nil {
+func LogTradeToDB(symbol, strategyID, side string, qty, entryPrice, exitPrice, pnl, balance float64, openedAt, closedAt time.Time, isSimulated bool) {
+	if DB == nil {
 		return
 	}
 
@@ -177,14 +178,14 @@ func logTradeToDB(symbol, strategyID, side string, qty, entryPrice, exitPrice, p
 		ClosedAt:    closedAt,
 	}
 
-	if err := db.Create(&trade).Error; err != nil {
+	if err := DB.Create(&trade).Error; err != nil {
 		slog.Error("记录交易到 MySQL 失败", "err", err)
 	}
 }
 
 // saveTokenToDB 将新发现的代币信息持久化到数据库
-func saveTokenToDB(info TokenInfo) {
-	if db == nil {
+func SaveTokenToDB(info types.TokenInfo) {
+	if DB == nil {
 		return
 	}
 
@@ -204,9 +205,9 @@ func saveTokenToDB(info TokenInfo) {
 	// 使用 Clauses 进行 Insert ... ON DUPLICATE KEY UPDATE 以防止重复
 	// 但这需要额外引入包，所以简单的可以用 FirstOrCreate 替代
 	var existing Token
-	result := db.Where("address = ?", info.Address).First(&existing)
+	result := DB.Where("address = ?", info.Address).First(&existing)
 	if result.Error == gorm.ErrRecordNotFound {
-		if err := db.Create(&token).Error; err != nil {
+		if err := DB.Create(&token).Error; err != nil {
 			slog.Error("保存 Token 到 MySQL 失败", "err", err)
 		}
 	} else if result.Error != nil {

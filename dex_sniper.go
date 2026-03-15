@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bot/config"
 	"bot/dex"
+	"bot/types"
 	"context"
 	"log/slog"
 	"math/big"
@@ -48,12 +50,12 @@ type SniperEngine struct {
 var globalSniper *SniperEngine
 
 func initSniperEngine(rpcHTTP *ethclient.Client, wssURL string) {
-	enabled := strings.ToLower(GetConfig("DEX_SNIPER_ENABLED")) == "true"
+	enabled := strings.ToLower(config.GetConfig("DEX_SNIPER_ENABLED")) == "true"
 	if !enabled {
 		slog.Warn("🚫 DEX_SNIPER_ENABLED 未开启，仅记录信号不进行真实链上狙击")
 	}
 
-	hexKey := GetConfig("EXECUTION_PRIVATE_KEY")
+	hexKey := config.GetConfig("EXECUTION_PRIVATE_KEY")
 	if enabled && hexKey == "" {
 		slog.Error("EXECUTION_PRIVATE_KEY 未设置，无法启动实盘 Sniper")
 		enabled = false
@@ -116,11 +118,11 @@ func initSniperEngine(rpcHTTP *ethclient.Client, wssURL string) {
 }
 
 // SniperBuyAndTrack 自动买入并加入监控 (Phase 1.1)
-func SniperBuyAndTrack(info TokenInfo) {
+func SniperBuyAndTrack(info types.TokenInfo) {
 	if globalSniper == nil || !globalSniper.enabled {
 		return
 	}
-	if info.DEX != DEXv2 {
+	if info.DEX != types.DEXv2 {
 		slog.Info("⏭ 当前 Sniper 仅支持 V2，跳过", "dex", info.DEX)
 		return
 	}

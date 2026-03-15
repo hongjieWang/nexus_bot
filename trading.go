@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bot/config"
+	"bot/database"
 	"bot/strategy"
 	"context"
 	"crypto/hmac"
@@ -84,9 +86,9 @@ type TradingEngine struct {
 }
 
 func startTradingEngine() {
-	apiKey := GetConfig("BINANCE_API_KEY")
-	apiSecret := GetConfig("BINANCE_API_SECRET")
-	enabled := strings.ToLower(GetConfig("TRADE_ENABLED")) == "true"
+	apiKey := config.GetConfig("BINANCE_API_KEY")
+	apiSecret := config.GetConfig("BINANCE_API_SECRET")
+	enabled := strings.ToLower(config.GetConfig("TRADE_ENABLED")) == "true"
 	if apiKey == "" || apiSecret == "" {
 		slog.Warn("🚫 API密钥未设置，降级为模拟模式")
 		enabled = false
@@ -249,7 +251,7 @@ func (e *TradingEngine) applyFill(side string, qty, execPrice float64) {
 		}
 
 		e.simulatedBalance += pnl
-		logTradeToDB(tradingSymbol, e.strat.ID(), side, closeQty, e.entryPrice, execPrice, pnl, e.simulatedBalance, time.Now(), time.Now(), true)
+		database.LogTradeToDB(tradingSymbol, e.strat.ID(), side, closeQty, e.entryPrice, execPrice, pnl, e.simulatedBalance, time.Now(), time.Now(), true)
 		e.recordResult(pnl)
 		sendTradingAlert("close_fill", e.positionQty, e.entryPrice, closeQty, execPrice, pnl)
 	}
@@ -635,7 +637,7 @@ func roundQty(qty float64) float64 { return math.Floor(qty*1000) / 1000 }
 func formatQty(qty float64) string { return strconv.FormatFloat(qty, 'f', 3, 64) }
 func nowMS() string                { return strconv.FormatInt(time.Now().UnixMilli(), 10) }
 func parseEnvFloat(key string, def float64) float64 {
-	if v := GetConfig(key); v != "" {
+	if v := config.GetConfig(key); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
 		}
@@ -643,7 +645,7 @@ func parseEnvFloat(key string, def float64) float64 {
 	return def
 }
 func parseEnvInt(key string, def int) int {
-	if v := GetConfig(key); v != "" {
+	if v := config.GetConfig(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
@@ -651,7 +653,7 @@ func parseEnvInt(key string, def int) int {
 	return def
 }
 func envOrDefault(key, def string) string {
-	if v := GetConfig(key); v != "" {
+	if v := config.GetConfig(key); v != "" {
 		return v
 	}
 	return def

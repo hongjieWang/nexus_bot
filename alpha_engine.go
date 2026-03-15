@@ -1,13 +1,14 @@
 package main
 
 import (
+	"bot/database"
 	"log/slog"
 	"time"
 )
 
 // startAlphaEngine 启动 Phase 3: 聪明钱 Alpha 挖掘与防女巫/MEV 引擎
 func startAlphaEngine() {
-	if db == nil {
+	if database.DB == nil {
 		slog.Warn("数据库未配置，Alpha Engine (Phase 3) 无法启动")
 		return
 	}
@@ -32,8 +33,8 @@ func startAlphaEngine() {
 func evaluateSmartWallets() {
 	slog.Info("🔍 [Alpha Engine] 开始执行聪明钱深度分析...")
 
-	var wallets []SmartWallet
-	if err := db.Find(&wallets).Error; err != nil {
+	var wallets []database.SmartWallet
+	if err := database.DB.Find(&wallets).Error; err != nil {
 		slog.Error("Alpha Engine 获取钱包列表失败", "err", err)
 		return
 	}
@@ -42,8 +43,8 @@ func evaluateSmartWallets() {
 		w := &wallets[i]
 
 		// 1. 获取该钱包的交互记录
-		var trades []SmartWalletTrade
-		db.Where("wallet = ?", w.Address).Find(&trades)
+		var trades []database.SmartWalletTrade
+		database.DB.Where("wallet = ?", w.Address).Find(&trades)
 
 		w.TotalTrades = len(trades)
 
@@ -51,7 +52,7 @@ func evaluateSmartWallets() {
 		// 启发式特征：如果在极短时间内产生巨大交易频率（例如超过 50 笔/天），高度疑似 MEV/高频套利
 		if w.TotalTrades > 50 {
 			var recentTrades int64
-			db.Model(&SmartWalletTrade{}).
+			database.DB.Model(&database.SmartWalletTrade{}).
 				Where("wallet = ? AND timestamp > ?", w.Address, time.Now().Add(-24*time.Hour)).
 				Count(&recentTrades)
 
@@ -84,7 +85,7 @@ func evaluateSmartWallets() {
 		}
 
 		// 保存回数据库
-		db.Save(w)
+		database.DB.Save(w)
 	}
 
 	// 4. 实体聚类与防女巫 (Phase 3.2)
@@ -104,7 +105,7 @@ func detectClusters() {
 
 	var interactions []TokenInteraction
 	// 近期 7 天的记录
-	db.Table("smart_wallet_trades").
+	database.DB.Table("smart_wallet_trades").
 		Select("token_address, wallet").
 		Where("timestamp > ?", time.Now().Add(-7*24*time.Hour)).
 		Group("token_address, wallet").
@@ -163,7 +164,7 @@ func detectClusters() {
 
 	// 更新数据库
 	for walletAddr, clusterID := range clusterMap {
-		db.Model(&SmartWallet{}).Where("address = ?", walletAddr).Update("cluster_id", clusterID)
+		database.DB.Model(&database.SmartWallet{}).Where("address = ?", walletAddr).Update("cluster_id", clusterID)
 	}
 
 	if len(clusterMap) > 0 {
