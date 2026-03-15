@@ -4,14 +4,18 @@ import (
 	"bot/config"
 	"bot/database"
 	"context"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"log/slog"
+	"math"
 	"math/big"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -47,18 +51,144 @@ func traceFundingSource(w1, w2 string) bool {
 	if alphaRPCClient == nil {
 		return false
 	}
-	
+
 	src1 := getWalletFundingSource(w1)
 	if src1 == "" {
 		return false
 	}
-	
+
 	src2 := getWalletFundingSource(w2)
 	if src2 == "" {
 		return false
 	}
-	
+
 	return src1 == src2
+}
+
+// resolveWalletROI 扫描某钱包对某代币的卖出记录，计算 ROI
+// 依赖：SmartWalletTrade 中的 BUY 记录已存在 Price 字段
+func resolveWalletROI(walletAddr string) (winRate float64, avgROI float64, avgEntryBlocks float64) {
+	type TradePair struct {
+		TokenAddress string
+		BuyPrice     float64
+		BuyBlock     uint64
+		SellPrice    float64
+		HasSell      bool
+	}
+
+	// 查出所有 BUY 记录
+	var buys []database.SmartWalletTrade
+	database.DB.Where("wallet = ? AND action = 'BUY'", walletAddr).
+		Order("timestamp ASC").Find(&buys)
+
+	if len(buys) == 0 {
+		return 0, 0, 999
+	}
+
+	pairs := make([]TradePair, 0, len(buys))
+	totalEntryBlocks := 0.0
+
+	for _, b := range buys {
+		pair := TradePair{
+			TokenAddress: b.TokenAddress,
+			BuyPrice:     b.Price,
+			BuyBlock:     b.BlockNum,
+		}
+
+		// 查找对应的 SELL（同 wallet 同 token，时间在 BUY 之后）
+		var sell database.SmartWalletTrade
+		err := database.DB.Where(
+			"wallet = ? AND token_address = ? AND action = 'SELL' AND block_num > ?",
+			walletAddr, b.TokenAddress, b.BlockNum,
+		).Order("block_num ASC").First(&sell).Error
+
+		if err == nil && sell.Price > 0 {
+			pair.SellPrice = sell.Price
+			pair.HasSell = true
+		}
+
+		// 记录入场时间：需要代币池创建块号，从 tokens 表查
+		var token database.Token
+		if err := database.DB.Where("address = ?", b.TokenAddress).First(&token).Error; err == nil {
+			delta := float64(b.BlockNum) - float64(token.CreatedBlock)
+			if delta < 0 {
+				delta = 0
+			}
+			totalEntryBlocks += delta
+		}
+
+		pairs = append(pairs, pair)
+	}
+
+	avgEntryBlocks = totalEntryBlocks / float64(len(pairs))
+
+	// 只用有 SELL 记录的配对计算胜率和 ROI
+	closedPairs := 0
+	wins := 0
+	totalROI := 0.0
+
+	for _, p := range pairs {
+		if !p.HasSell || p.BuyPrice <= 0 {
+			continue
+		}
+		closedPairs++
+		roi := (p.SellPrice - p.BuyPrice) / p.BuyPrice
+		totalROI += roi
+		if roi > 0.20 { // 至少盈利 20% 才算赢
+			wins++
+		}
+	}
+
+	if closedPairs > 0 {
+		winRate = float64(wins) / float64(closedPairs)
+		avgROI = totalROI / float64(closedPairs)
+	}
+	return
+}
+
+// calcScore 多维加权评分，返回 0-100
+func calcScore(w *database.SmartWallet) float64 {
+	const (
+		wWinRate     = 0.35
+		wROI         = 0.30
+		wRecency     = 0.20
+		wConsistency = 0.10
+		wEarly       = 0.05
+	)
+
+	// ── 1. 胜率分量：sigmoid 以 55% 为中心 ──
+	fWinRate := sigmoid(w.WinRate, 0.55, 10.0)
+
+	// ── 2. ROI 分量：tanh 压缩，防单笔极端值拉偏 ──
+	fROI := math.Tanh(w.ROI / 0.5)
+	if fROI < 0 {
+		fROI = 0 // ROI 为负时该分量归零
+	}
+
+	// ── 3. 近期活跃分量：指数衰减，半衰期约 14 天 ──
+	daysSinceActive := time.Since(w.LastActiveAt).Hours() / 24.0
+	fRecency := math.Exp(-daysSinceActive / 14.0)
+
+	// ── 4. 交易频率一致性：峰值在 15 笔，两侧对数衰减 ──
+	fConsistency := 0.0
+	if w.TotalTrades > 0 {
+		logDelta := math.Abs(math.Log(float64(w.TotalTrades) / 15.0))
+		fConsistency = math.Max(0, 1.0-logDelta/4.0)
+	}
+
+	// ── 5. 早入场奖励：指数衰减，100 块为特征尺度 ──
+	fEarly := math.Exp(-w.AvgEntryBlocks / 100.0)
+
+	raw := wWinRate*fWinRate + wROI*fROI + wRecency*fRecency +
+		wConsistency*fConsistency + wEarly*fEarly
+
+	score := raw * 100.0
+	return math.Min(100.0, math.Max(0.0, score))
+}
+
+// sigmoid 广义 Logistic 函数
+func sigmoid(x, center, steepness float64) float64 {
+	return 1.0 / (1.0 + math.Exp(-steepness*(x-center)))
 }
 
 // getWalletFundingSource 是 traceFundingSource 的辅助函数，带缓存
@@ -78,7 +208,7 @@ func getWalletFundingSource(wallet string) string {
 		slog.Error("获取最新区块号失败 for funding source", "err", err)
 		return ""
 	}
-	
+
 	fromBlock := new(big.Int).Sub(big.NewInt(int64(latest)), big.NewInt(30*24*60*60/3)) // ≈30天
 
 	// 查询入账历史
@@ -87,7 +217,7 @@ func getWalletFundingSource(wallet string) string {
 		FromBlock: fromBlock,
 		ToBlock:   new(big.Int).SetUint64(latest),
 	}
-	
+
 	logs, err := alphaRPCClient.FilterLogs(context.Background(), query)
 	if err != nil {
 		slog.Error("FilterLogs 失败 for funding source", "err", err)
@@ -128,6 +258,19 @@ func startAlphaEngine(rpcClient *ethclient.Client) {
 		defer ticker.Stop()
 		for range ticker.C {
 			evaluateSmartWallets()
+		}
+	}()
+
+	// ← 新增：SELL 轨迹扫描 goroutine
+	go func() {
+		// 延迟 2 分钟，等 rpcHTTP 和数据库都稳定后再启动
+		time.Sleep(2 * time.Minute)
+		trackSmartWalletSells()
+
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			trackSmartWalletSells()
 		}
 	}()
 }
@@ -172,33 +315,34 @@ func evaluateSmartWallets() {
 
 		// 3. 动态权重打分与战绩回测 (Phase 3.1)
 		if !w.IsMEV {
-			// 基准分可调
-			baseScoreStr := config.GetConfig("ALPHA_BASE_SCORE")
-			baseScore := 50.0
-			if v, err := strconv.ParseFloat(baseScoreStr, 64); err == nil {
-				baseScore = v
+			// 计算真实战绩
+			winRate, avgROI, avgEntryBlocks := resolveWalletROI(w.Address)
+
+			// 写回统计字段
+			w.WinRate = winRate
+			w.ROI = avgROI
+			w.AvgEntryBlocks = avgEntryBlocks
+
+			// 更新最后活跃时间
+			var lastTrade database.SmartWalletTrade
+			if err := database.DB.Where("wallet = ?", w.Address).
+				Order("timestamp DESC").First(&lastTrade).Error; err == nil {
+				w.LastActiveAt = lastTrade.Timestamp
 			}
 
-			newScore := baseScore
-			// 交易频率权重：过低没参考价值，适中最好，过高疑似机器人
-			if w.TotalTrades > 3 && w.TotalTrades <= 30 {
-				newScore += float64(w.TotalTrades) * 1.5
-			} else if w.TotalTrades > 30 {
-				newScore -= 5.0
-			}
+			// 样本量保护：少于 3 笔已结交易时降级使用旧公式，避免噪声得高分
+			closedCount := 0
+			database.DB.Model(&database.SmartWalletTrade{}).
+				Where("wallet = ? AND action = 'SELL'", w.Address).
+				Count((*int64)(unsafe.Pointer(&closedCount)))
 
-			// 胜率与 ROI 权重 (假设已通过回测引擎更新)
-			newScore += w.WinRate * 40.0       // 胜率贡献最高 40 分
-			newScore += (w.ROI / 100.0) * 10.0 // ROI 贡献
-
-			// 平滑处理得分，设置上下限
-			if newScore > 100.0 {
-				newScore = 100.0
+			if closedCount >= 3 {
+				w.Score = calcScore(w)
+			} else {
+				// 数据不足时给保守基准分（低于过滤阈值 20 分的钱包不会被追踪）
+				w.Score = 30.0 + float64(w.TotalTrades)*0.5
+				w.Score = math.Min(w.Score, 49.0) // 未验证的钱包上限 49 分
 			}
-			if newScore < 0.0 {
-				newScore = 0.0
-			}
-			w.Score = newScore
 		}
 
 		// 保存回数据库
@@ -416,4 +560,161 @@ func aggregateEntities() {
 	if len(results) > 0 {
 		slog.Info("🧬 [Alpha Engine] 实体 (Entity) 聚合完成", "total_entities", len(results))
 	}
+}
+
+// ================== SELL 轨迹扫描 ==================
+
+// trackSmartWalletSells 扫描近 7 天有 BUY 记录的聪明钱，补录其卖出行为
+// 直接使用 main.go 中的全局变量：rpcHTTP、dexRouters、topicTransfer
+func trackSmartWalletSells() {
+	slog.Info("🔍 [Alpha Engine] 开始扫描聪明钱 SELL 轨迹...")
+
+	type BuyRecord struct {
+		Wallet       string
+		TokenAddress string
+		PoolAddress  string
+		MinBlock     uint64
+	}
+
+	var records []BuyRecord
+	database.DB.Table("smart_wallet_trades").
+		Select("wallet, token_address, pool_address, min(block_num) as min_block").
+		Where("action = 'BUY' AND timestamp > ?", time.Now().Add(-7*24*time.Hour)).
+		Group("wallet, token_address").
+		Scan(&records)
+
+	if len(records) == 0 {
+		return
+	}
+
+	latest, err := rpcCallWithRetry(context.Background(), func(ctx context.Context) (uint64, error) {
+		c, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return rpcHTTP.BlockNumber(c)
+	})
+	if err != nil {
+		slog.Warn("[Alpha Engine] 获取最新块失败，跳过 SELL 扫描", "err", err)
+		return
+	}
+
+	found := 0
+	for _, r := range records {
+		// 已有 SELL 记录则跳过
+		var cnt int64
+		database.DB.Model(&database.SmartWalletTrade{}).
+			Where("wallet = ? AND token_address = ? AND action = 'SELL'", r.Wallet, r.TokenAddress).
+			Count(&cnt)
+		if cnt > 0 {
+			continue
+		}
+
+		toBlock := r.MinBlock + 2000
+		if toBlock > latest {
+			toBlock = latest
+		}
+		if toBlock <= r.MinBlock {
+			continue
+		}
+
+		// 扫描从 wallet 发出的 Transfer（即卖出动作）
+		query := ethereum.FilterQuery{
+			FromBlock: new(big.Int).SetUint64(r.MinBlock + 1),
+			ToBlock:   new(big.Int).SetUint64(toBlock),
+			Addresses: []common.Address{common.HexToAddress(r.TokenAddress)},
+			Topics: [][]common.Hash{
+				{topicTransfer},
+				{common.HexToHash(r.Wallet)}, // from = 聪明钱地址
+			},
+		}
+
+		logs, err := rpcCallWithRetry(context.Background(), func(ctx context.Context) ([]gethtypes.Log, error) {
+			c, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			return rpcHTTP.FilterLogs(c, query)
+		})
+		if err != nil {
+			continue
+		}
+
+		for _, lg := range logs {
+			if len(lg.Topics) < 3 {
+				continue
+			}
+			toAddr := strings.ToLower(common.BytesToAddress(lg.Topics[2].Bytes()).Hex())
+
+			// 卖出的接收方必须是 router 或 pool，否则是普通转账不算卖出
+			_, isRouter := dexRouters[toAddr]
+			isPool := r.PoolAddress != "" && toAddr == strings.ToLower(r.PoolAddress)
+			if !isRouter && !isPool {
+				continue
+			}
+
+			// 在卖出块估算代币价格
+			price := estimatePriceAtBlock(r.TokenAddress, r.PoolAddress, lg.BlockNumber)
+
+			database.RecordSmartWalletTradeWithPrice(
+				r.Wallet, r.TokenAddress, "SELL", lg.BlockNumber, price, r.PoolAddress,
+			)
+			found++
+			break // 同一 token 只记录最早的一笔卖出
+		}
+	}
+
+	slog.Info("✅ [Alpha Engine] SELL 轨迹扫描完毕", "new_sells_found", found, "pairs_scanned", len(records))
+}
+
+// estimatePriceAtBlock 查询某 V2 Pool 在指定块的 getReserves，
+// 返回每个 token 对应的 BNB 单价（BNB/token）
+// 注意：仅支持 V2；V3 目前返回 0（降级，不影响统计正确性）
+func estimatePriceAtBlock(tokenAddr, poolAddr string, blockNum uint64) float64 {
+	if poolAddr == "" {
+		return 0
+	}
+
+	to := common.HexToAddress(poolAddr)
+	blockBig := new(big.Int).SetUint64(blockNum)
+
+	result, err := rpcCallWithRetry(context.Background(), func(ctx context.Context) ([]byte, error) {
+		c, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		return rpcHTTP.CallContract(c,
+			ethereum.CallMsg{To: &to, Data: selectorGetReserves},
+			blockBig,
+		)
+	})
+	if err != nil || len(result) < 64 {
+		return 0
+	}
+
+	r0 := new(big.Int).SetBytes(result[0:32])
+	r1 := new(big.Int).SetBytes(result[32:64])
+	if r0.Sign() == 0 || r1.Sign() == 0 {
+		return 0
+	}
+
+	wbnbNorm := strings.ToLower(wbnb)
+	tokenNorm := strings.ToLower(tokenAddr)
+
+	// 判断哪边是 WBNB：通过比对地址
+	// r0 对应 token0（字典序较小的地址），r1 对应 token1
+	var bnbReserve, tokenReserve *big.Int
+	if tokenNorm < wbnbNorm {
+		// token 是 token0，WBNB 是 token1
+		tokenReserve, bnbReserve = r0, r1
+	} else {
+		// WBNB 是 token0，token 是 token1
+		bnbReserve, tokenReserve = r0, r1
+	}
+
+	if tokenReserve.Sign() == 0 {
+		return 0
+	}
+
+	// price = bnbReserve / tokenReserve（单位均为 wei，比值即为价格）
+	price, _ := new(big.Float).Quo(
+		new(big.Float).SetInt(bnbReserve),
+		new(big.Float).SetInt(tokenReserve),
+	).Float64()
+
+	return price
 }

@@ -105,7 +105,7 @@ func initSniperEngine(rpcHTTP *ethclient.Client, wssURL string) {
 		positions:      make(map[string]*SniperPosition),
 		enabled:        enabled,
 		buyBnbAmount:   buyBnbAmountInt,
-		slippageBps:    int64(parseEnvInt("DEX_SLIPPAGE_BPS", 1000)), // 默认 10% 滑点
+		slippageBps:    int64(parseEnvInt("DEX_SLIPPAGE_BPS", 300)), // 默认 3% 滑点 (修复: 防夹击)
 		takeProfitMult: parseEnvFloat("DEX_TAKE_PROFIT_MULT", 2.0),   // 默认翻倍止盈
 		stopLossMult:   parseEnvFloat("DEX_STOP_LOSS_MULT", 0.8),     // 默认跌 20% 止损
 	}
@@ -132,47 +132,71 @@ func SniperBuyAndTrack(info types.TokenInfo) {
 		globalSniper.mu.Unlock()
 		return
 	}
+	// 关键修复：立即占用位置，防止 TOCTOU 竞态导致重复买入
+	globalSniper.positions[info.Address] = nil 
 	globalSniper.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// 发生错误时清理占用位
+	cleanup := func() {
+		globalSniper.mu.Lock()
+		if globalSniper.positions[info.Address] == nil {
+			delete(globalSniper.positions, info.Address)
+		}
+		globalSniper.mu.Unlock()
+	}
+
+	// 拆分 Context：买入广播 15s，等待回执 3 分钟 (应对拥堵)
+	ctxBuy, cancelBuy := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelBuy()
 
 	slog.Info("🔥 发起 Sniper 买入", "symbol", info.Symbol, "token", info.Address)
 
 	// 1. 发起买入
-	tx, err := globalSniper.pancakeV2.BuyTokenWithBNB(ctx, info.Address, globalSniper.buyBnbAmount, globalSniper.slippageBps)
+	tx, err := globalSniper.pancakeV2.BuyTokenWithBNB(ctxBuy, info.Address, globalSniper.buyBnbAmount, globalSniper.slippageBps)
 	if err != nil {
-		slog.Error("❌ Sniper 买入失败", "token", info.Address, "err", err)
+		slog.Error("❌ Sniper 买入广播失败", "token", info.Address, "err", err)
+		cleanup()
 		return
 	}
 	slog.Info("✅ Sniper 买入交易已广播", "hash", tx.Hash().Hex())
 
-	// 2. 等待交易确认
-	receipt, err := bindWaitMined(ctx, globalSniper.rpcHTTP, tx.Hash())
+	// 2. 等待交易确认 (独立长 Context)
+	ctxWait, cancelWait := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancelWait()
+	receipt, err := bindWaitMined(ctxWait, globalSniper.rpcHTTP, tx.Hash())
 	if err != nil || receipt.Status != 1 {
 		slog.Error("❌ Sniper 买入上链失败或回滚", "hash", tx.Hash().Hex(), "err", err)
+		cleanup()
 		return
 	}
 
-	// 3. 获取余额
-	balance, err := globalSniper.erc20Client.BalanceOf(ctx, info.Address, globalSniper.wallet.Address)
+	// 3. 获取实时余额
+	balance, err := globalSniper.erc20Client.BalanceOf(ctxWait, info.Address, globalSniper.wallet.Address)
 	if err != nil || balance.Sign() <= 0 {
 		slog.Error("❌ 获取代币余额失败 (可能未成功买入)", "err", err)
+		cleanup()
 		return
 	}
 
-	// 4. 发起授权 (Approve) 以便后续卖出
-	slog.Info("🔓 开始自动授权 Router 卖出", "token", info.Address)
+	// 4. 发起授权 (Approve) 并等待确认，确保后续能卖出
+	slog.Info("🔓 正在授权 Router...", "token", info.Address)
 	maxInt := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-	appTx, err := globalSniper.erc20Client.Approve(ctx, info.Address, globalSniper.pancakeV2.Router, maxInt)
+	appTx, err := globalSniper.erc20Client.Approve(ctxWait, info.Address, globalSniper.pancakeV2.Router, maxInt)
 	if err != nil {
-		slog.Error("⚠️ 授权 Router 失败，后续可能无法自动卖出", "err", err)
-	} else {
-		slog.Info("✅ 授权交易已广播", "hash", appTx.Hash().Hex())
-		// 我们不需要死等授权成功，可以后台慢慢等
+		slog.Error("❌ 授权 Router 失败，放弃监控该持仓", "err", err)
+		cleanup()
+		return
 	}
+	
+	appReceipt, err := bindWaitMined(ctxWait, globalSniper.rpcHTTP, appTx.Hash())
+	if err != nil || appReceipt.Status != 1 {
+		slog.Error("❌ 授权交易执行失败", "hash", appTx.Hash().Hex(), "err", err)
+		cleanup()
+		return
+	}
+	slog.Info("✅ 授权已完成", "hash", appTx.Hash().Hex())
 
-	// 5. 加入持仓追踪
+	// 5. 加入正式持仓追踪
 	buyValF, _ := new(big.Float).Quo(new(big.Float).SetInt(globalSniper.buyBnbAmount), big.NewFloat(1e18)).Float64()
 
 	pos := &SniperPosition{
@@ -192,8 +216,6 @@ func SniperBuyAndTrack(info types.TokenInfo) {
 	globalSniper.mu.Unlock()
 
 	slog.Info("🎯 Sniper 持仓已建立并开始监控", "symbol", info.Symbol, "balance", balance.String())
-
-	// TODO: 也可以记录到数据库的 trades_history 中
 }
 
 // monitorPositions 定时轮询价格，执行止盈止损 (Phase 1.2)
@@ -203,15 +225,24 @@ func (s *SniperEngine) monitorPositions() {
 
 	for range ticker.C {
 		s.mu.Lock()
-		// 复制一份，避免长时间锁
 		activeTokens := make([]*SniperPosition, 0, len(s.positions))
 		for _, pos := range s.positions {
-			activeTokens = append(activeTokens, pos)
+			if pos != nil { // 过滤掉 Pending 状态的 nil 占位符
+				activeTokens = append(activeTokens, pos)
+			}
 		}
 		s.mu.Unlock()
 
 		for _, pos := range activeTokens {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			
+			// 修复：每次轮询获取真实余额，适配通缩代币 (High-risk fix)
+			realBalance, err := s.erc20Client.BalanceOf(ctx, pos.TokenAddress, s.wallet.Address)
+			if err != nil || realBalance.Sign() <= 0 {
+				cancel()
+				continue
+			}
+			pos.TokenBalance = realBalance
 
 			path := []common.Address{
 				common.HexToAddress(pos.TokenAddress),
@@ -221,7 +252,6 @@ func (s *SniperEngine) monitorPositions() {
 			cancel()
 
 			if err != nil {
-				// 获取价格失败，可能池子被撤或流动性枯竭
 				continue
 			}
 
@@ -293,13 +323,14 @@ func (s *SniperEngine) monitorRugPulls() {
 						r0 := new(big.Int).SetBytes(lg.Data[0:32])
 						r1 := new(big.Int).SetBytes(lg.Data[32:64])
 
-						// 如果任意一边储备量极低，疑似撤池子，触发 Panic Sell
-						if r0.Cmp(big.NewInt(1000)) < 0 || r1.Cmp(big.NewInt(1000)) < 0 {
+						// 修复：阈值改为 0.01 BNB (1e16 wei)，防止精度问题误触发 (High #10)
+						threshold := big.NewInt(1e16) 
+						if r0.Cmp(threshold) < 0 || r1.Cmp(threshold) < 0 {
 							poolHex := strings.ToLower(lg.Address.Hex())
 							s.mu.Lock()
 							var targetToken *SniperPosition
 							for _, pos := range s.positions {
-								if strings.ToLower(pos.PoolAddress) == poolHex {
+								if pos != nil && strings.ToLower(pos.PoolAddress) == poolHex {
 									targetToken = pos
 									break
 								}
@@ -307,7 +338,7 @@ func (s *SniperEngine) monitorRugPulls() {
 							s.mu.Unlock()
 
 							if targetToken != nil {
-								slog.Warn("🚨 检测到疑似撤池子(Liquidity Removed)，执行 Panic Sell!", "symbol", targetToken.Symbol)
+								slog.Warn("🚨 检测到流动性骤降(Rug Pull Risk)，执行 Panic Sell!", "symbol", targetToken.Symbol)
 								s.executeSell(targetToken.TokenAddress, targetToken.TokenBalance, "Panic-Rug")
 							}
 						}

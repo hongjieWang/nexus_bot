@@ -47,16 +47,19 @@ type TradeHistory struct {
 
 // SmartWallet 模型：聪明钱数据库，支持历史战绩与防女巫 (Phase 3)
 type SmartWallet struct {
-	Address     string    `gorm:"type:varchar(64);primaryKey"`
-	Label       string    `gorm:"type:varchar(100)"`
-	Score       float64   `gorm:"type:double;default:50.0"`   // 动态权重评分
-	WinRate     float64   `gorm:"type:double;default:0.0"`    // 胜率
-	TotalTrades int       `gorm:"type:int;default:0"`         // 总交易笔数
-	ROI         float64   `gorm:"type:double;default:0.0"`    // 平均投资回报率
-	IsMEV       bool      `gorm:"type:boolean;default:false"` // 是否被标记为 MEV/套利机器人
-	ClusterID   string    `gorm:"type:varchar(64)"`           // 实体聚类 ID (防女巫)
-	CreatedAt   time.Time `gorm:"autoCreateTime"`
-	UpdatedAt   time.Time `gorm:"autoUpdateTime"`
+	Address        string    `gorm:"type:varchar(64);primaryKey"`
+	Label          string    `gorm:"type:varchar(100)"`
+	Score          float64   `gorm:"type:double;default:50.0"`   // 动态权重评分
+	WinRate        float64   `gorm:"type:double;default:0.0"`    // 胜率
+	TotalTrades    int       `gorm:"type:int;default:0"`         // 总交易笔数
+	WinTrades      int       `gorm:"type:int;default:0"`         // ← 新增
+	ROI            float64   `gorm:"type:double;default:0.0"`    // 平均投资回报率
+	AvgEntryBlocks float64   `gorm:"type:double;default:999"`    // ← 新增：平均入场块数
+	LastActiveAt   time.Time `gorm:"index"`                      // ← 新增：最近一次交易时间
+	IsMEV          bool      `gorm:"type:boolean;default:false"` // 是否被标记为 MEV/套利机器人
+	ClusterID      string    `gorm:"type:varchar(64)"`           // 实体聚类 ID (防女巫)
+	CreatedAt      time.Time `gorm:"autoCreateTime"`
+	UpdatedAt      time.Time `gorm:"autoUpdateTime"`
 }
 
 // SmartEntity 模型：用于聚合被判定为同一个矩阵号/女巫的多个钱包战绩
@@ -79,6 +82,8 @@ type SmartWalletTrade struct {
 	Action       string    `gorm:"type:varchar(10)"` // "BUY" / "SELL"
 	AmountUSD    float64   `gorm:"type:double"`      // 交易金额 (USD)
 	BlockNum     uint64    `gorm:"type:bigint"`
+	Price        float64   `gorm:"type:double;default:0"` // ← 新增：成交价格（BNB 计）
+	PoolAddress  string    `gorm:"type:varchar(64)"`      // ← 新增：来源 pool
 	Timestamp    time.Time `gorm:"autoCreateTime"`
 }
 
@@ -149,6 +154,31 @@ func RecordSmartWalletTrade(walletAddr, tokenAddr, action string, amountUSD floa
 		Action:       action,
 		AmountUSD:    amountUSD,
 		BlockNum:     blockNum,
+	}
+	DB.Create(&trade)
+}
+
+// RecordSmartWalletTradeWithPrice 记录带价格的聪明钱交互轨迹
+func RecordSmartWalletTradeWithPrice(walletAddr, tokenAddr, action string, blockNum uint64, price float64, poolAddr string) {
+	if DB == nil {
+		return
+	}
+	// 防止重复写入同一笔卖出
+	var cnt int64
+	DB.Model(&SmartWalletTrade{}).
+		Where("wallet = ? AND token_address = ? AND action = ? AND block_num = ?",
+			walletAddr, tokenAddr, action, blockNum).
+		Count(&cnt)
+	if cnt > 0 {
+		return
+	}
+	trade := SmartWalletTrade{
+		Wallet:       walletAddr,
+		TokenAddress: tokenAddr,
+		Action:       action,
+		BlockNum:     blockNum,
+		Price:        price,
+		PoolAddress:  poolAddr,
 	}
 	DB.Create(&trade)
 }

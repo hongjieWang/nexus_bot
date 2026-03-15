@@ -54,7 +54,9 @@ func RunBacktest(strat strategy.BaseStrategy, symbol, interval string, limit int
 
 	// 3. 逐根 K 线回放 (需要保留足够的前置数据供指标计算，比如预留 50 根)
 	startIdx := 50
-	for i := startIdx; i < len(klines); i++ {
+	feeRate := 0.0004 // 0.04% 手续费 (Binance USDT-M Taker 标准)
+
+	for i := startIdx; i < len(klines)-1; i++ {
 		// 当前的可见历史 K 线切片
 		history := klines[:i+1]
 		currentKline := klines[i]
@@ -88,6 +90,10 @@ func RunBacktest(strat strategy.BaseStrategy, symbol, interval string, limit int
 			if filled {
 				// 成交逻辑
 				qty := o.Qty
+				
+				// 扣除手续费
+				balance -= fillPrice * qty * feeRate
+
 				if o.Side == "SELL" {
 					qty = -qty
 				}
@@ -181,9 +187,12 @@ func RunBacktest(strat strategy.BaseStrategy, symbol, interval string, limit int
 				}
 
 				if o.OrderType == "Market" {
-					// 假设立即以收盘价成交
-					// (与上面的成交逻辑重复，这里为简化回测直接套用)
-					fillPrice := currentKline.Close
+					// 关键修复：以【下一根】K 线的开盘价成交，消除 Look-ahead Bias
+					fillPrice := klines[i+1].Open
+					
+					// 扣除手续费
+					balance -= fillPrice * qty * feeRate
+
 					sideQty := qty
 					if o.Side == "sell" || o.Side == "SELL" {
 						sideQty = -qty

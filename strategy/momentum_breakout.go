@@ -6,7 +6,7 @@ import "math"
 type MomentumBreakoutStrategy struct {
 	strategyID           string
 	lookback             int
-	breakoutThresholdBps float64
+	breakbackThresholdBps float64
 	volumeSurgeMult      float64
 	trailingStopBps      float64
 	size                 float64
@@ -14,6 +14,10 @@ type MomentumBreakoutStrategy struct {
 	highs   []float64
 	lows    []float64
 	volumes []float64
+
+	// 关键修复：维护历史最高/最低价以实现真正的追踪止损 (High #8)
+	highWaterMark float64
+	lowWaterMark  float64
 }
 
 func NewMomentumBreakoutStrategy(
@@ -30,13 +34,15 @@ func NewMomentumBreakoutStrategy(
 	return &MomentumBreakoutStrategy{
 		strategyID:           id,
 		lookback:             lookback,
-		breakoutThresholdBps: breakoutThresholdBps,
+		breakbackThresholdBps: breakoutThresholdBps,
 		volumeSurgeMult:      volumeSurgeMult,
 		trailingStopBps:      trailingStopBps,
 		size:                 size,
 		highs:                make([]float64, 0, lookback),
 		lows:                 make([]float64, 0, lookback),
 		volumes:              make([]float64, 0, lookback),
+		highWaterMark:        0,
+		lowWaterMark:         0,
 	}
 }
 
@@ -116,8 +122,12 @@ func (s *MomentumBreakoutStrategy) OnTick(snapshot MarketSnapshot, ctx *Strategy
 	// Trailing stop for existing position
 	if ctx.PositionQty != 0 {
 		if ctx.PositionQty > 0 { // Long position
-			stopPrice := mid * (1.0 - s.trailingStopBps/10000.0)
+			if s.highWaterMark == 0 || mid > s.highWaterMark {
+				s.highWaterMark = mid
+			}
+			stopPrice := s.highWaterMark * (1.0 - s.trailingStopBps/10000.0)
 			if snapshot.Bid <= stopPrice {
+				s.highWaterMark = 0 // Reset
 				orders = append(orders, StrategyDecision{
 					Action:     "place_order",
 					Instrument: snapshot.Instrument,
@@ -129,8 +139,12 @@ func (s *MomentumBreakoutStrategy) OnTick(snapshot MarketSnapshot, ctx *Strategy
 				})
 			}
 		} else { // Short position
-			stopPrice := mid * (1.0 + s.trailingStopBps/10000.0)
+			if s.lowWaterMark == 0 || mid < s.lowWaterMark {
+				s.lowWaterMark = mid
+			}
+			stopPrice := s.lowWaterMark * (1.0 + s.trailingStopBps/10000.0)
 			if snapshot.Ask >= stopPrice {
+				s.lowWaterMark = 0 // Reset
 				orders = append(orders, StrategyDecision{
 					Action:     "place_order",
 					Instrument: snapshot.Instrument,
@@ -145,8 +159,12 @@ func (s *MomentumBreakoutStrategy) OnTick(snapshot MarketSnapshot, ctx *Strategy
 		return orders
 	}
 
+	// No position: reset water marks
+	s.highWaterMark = 0
+	s.lowWaterMark = 0
+
 	// Breakout entry (no position)
-	if upsideBps > s.breakoutThresholdBps && volSurge {
+	if upsideBps > s.breakbackThresholdBps && volSurge {
 		orders = append(orders, StrategyDecision{
 			Action:     "place_order",
 			Instrument: snapshot.Instrument,
@@ -156,7 +174,7 @@ func (s *MomentumBreakoutStrategy) OnTick(snapshot MarketSnapshot, ctx *Strategy
 			OrderType:  "Ioc",
 			Meta:       map[string]interface{}{"signal": "breakout_long", "breakout_bps": upsideBps, "volume_surge": true},
 		})
-	} else if downsideBps > s.breakoutThresholdBps && volSurge {
+	} else if downsideBps > s.breakbackThresholdBps && volSurge {
 		orders = append(orders, StrategyDecision{
 			Action:     "place_order",
 			Instrument: snapshot.Instrument,

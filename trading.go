@@ -393,6 +393,8 @@ func (e *TradingEngine) checkGlobalExitConditions(price, atr float64) {
 		e.cancelAllOrders()
 		e.placeOrder(closeSide, "MARKET", qty, 0, 0)
 	} else {
+		// 关键修复：模拟模式下平仓后也需清除所有本地活跃挂单 (Severe #5)
+		e.activeOrders = make(map[int64]*ActiveOrder)
 		e.applyFill(closeSide, qty, price)
 	}
 	e.globalSL, e.globalTP = 0, 0

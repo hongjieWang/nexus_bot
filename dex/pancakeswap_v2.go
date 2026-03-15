@@ -115,15 +115,43 @@ func (p *PancakeV2Client) BuyTokenWithBNB(ctx context.Context, tokenAddress stri
 	}
 	auth.GasLimit = gasLimit * 120 / 100 // 增加 20% 缓冲防 OutOfGas
 
-	// 5. 签名发送
-	tx := types.NewTx(&types.LegacyTx{
-		Nonce:    auth.Nonce.Uint64(),
-		To:       &p.Router,
-		Value:    auth.Value,
-		Gas:      auth.GasLimit,
-		GasPrice: auth.GasPrice,
-		Data:     data,
-	})
+	// 5. 增强 MEV 防护：增加 Gas 溢价 (15%) 并优先使用 DynamicFeeTx (EIP-1559)
+	gasPriceWithBonus := new(big.Int).Mul(auth.GasPrice, big.NewInt(115))
+	gasPriceWithBonus.Div(gasPriceWithBonus, big.NewInt(100))
+
+	head, err := p.Wallet.Client.HeaderByNumber(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get block head: %w", err)
+	}
+
+	var innerTx types.TxData
+	if head.BaseFee != nil {
+		// EIP-1559: 设置 Tip 抢占优先权
+		tip := big.NewInt(1e9) // 1 gwei tip
+		feeCap := new(big.Int).Add(new(big.Int).Mul(head.BaseFee, big.NewInt(2)), tip)
+		innerTx = &types.DynamicFeeTx{
+			ChainID:   p.Wallet.ChainID,
+			Nonce:     auth.Nonce.Uint64(),
+			GasTipCap: tip,
+			GasFeeCap: feeCap,
+			Gas:       auth.GasLimit,
+			To:        &p.Router,
+			Value:     auth.Value,
+			Data:      data,
+		}
+	} else {
+		// Legacy: 纯 GasPrice 溢价抢跑
+		innerTx = &types.LegacyTx{
+			Nonce:    auth.Nonce.Uint64(),
+			To:       &p.Router,
+			Value:    auth.Value,
+			Gas:      auth.GasLimit,
+			GasPrice: gasPriceWithBonus,
+			Data:     data,
+		}
+	}
+
+	tx := types.NewTx(innerTx)
 
 	signedTx, err := auth.Signer(auth.From, tx)
 	if err != nil {

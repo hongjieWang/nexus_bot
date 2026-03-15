@@ -503,13 +503,13 @@ func handleV3PoolCreated(lg gethtypes.Log) {
 
 // ================== 公共处理逻辑 ==================
 func processNewPool(tokenAddr, poolAddr string, dex types.DEXVersion, feeTier uint32, isToken0WBNB bool, blockNum uint64) {
-	// ... (前面的 seen 检查逻辑保持不变)
+	// 关键修复：改用 poolAddr 作为去重键，防止错过同一代币在 V2/V3 的不同机会 (高危 #9)
 	seenMu.Lock()
-	if last, exists := seen[tokenAddr]; exists && time.Since(last) < seenTTL {
+	if last, exists := seen[poolAddr]; exists && time.Since(last) < seenTTL {
 		seenMu.Unlock()
 		return
 	}
-	seen[tokenAddr] = time.Now()
+	seen[poolAddr] = time.Now()
 	seenMu.Unlock()
 
 	symbol := fetchTokenString(tokenAddr, selectorSymbol)
@@ -526,8 +526,17 @@ func processNewPool(tokenAddr, poolAddr string, dex types.DEXVersion, feeTier ui
 	}
 	log.Info("🆕 新 Pool 创建，进入 V2 筛选流程...")
 
-	// V2 筛选第一关：合约安全审计
-	pass, reason := isSecureTokenV2(tokenAddr)
+	// V2 筛选第一关：合约安全审计 (带重试机制，中危 #15)
+	var pass bool
+	var reason string
+	for i := 0; i < 3; i++ {
+		pass, reason = isSecureTokenV2(tokenAddr)
+		if pass || !strings.Contains(reason, "请求失败") {
+			break
+		}
+		time.Sleep(time.Duration(i+1) * time.Second)
+	}
+
 	if !pass {
 		log.Warn("⛔ V2 筛选淘汰 (安全审计)", "reason", reason)
 		return
@@ -566,7 +575,6 @@ func processNewPool(tokenAddr, poolAddr string, dex types.DEXVersion, feeTier ui
 		return
 	}
 	log.Info("✅ V2-3 持仓分析通过", "reason", reason)
-
 
 	info := types.TokenInfo{
 		Address:      tokenAddr,
@@ -637,56 +645,31 @@ func fetchV2LiquidityBNB(pairAddr string, isToken0WBNB bool) (float64, error) {
 	return f, nil
 }
 
-// ================== V3 流动性：slot0() + liquidity() ==================
-// virtualBNB = L × 2^96 / sqrtPriceX96  (token0==WBNB)
-// virtualBNB = L × sqrtPriceX96 / 2^96  (token1==WBNB)
+// ================== V3 流动性：直接查询池内 WBNB 余额 (修复: 高危 #7) ==================
 func fetchV3LiquidityBNB(poolAddr string, isToken0WBNB bool) (float64, error) {
-	to := common.HexToAddress(poolAddr)
+	// 集中流动性池的虚拟流动性 (L) 不代表真实金库，应直接查 WBNB 余额
+	wbnbAddr := common.HexToAddress(wbnb)
+	pool := common.HexToAddress(poolAddr)
 
-	slot0Result, err := rpcCallWithRetry(context.Background(), func(ctx context.Context) ([]byte, error) {
-		c, cancel := context.WithTimeout(ctx, 8*time.Second)
+	// 构造 ERC20 balanceOf(address) 调用: selector = 0x70a08231
+	data := append([]byte{0x70, 0xa0, 0x82, 0x31}, common.LeftPadBytes(pool.Bytes(), 32)...)
+
+	result, err := rpcCallWithRetry(context.Background(), func(ctx context.Context) ([]byte, error) {
+		c, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		return rpcHTTP.CallContract(c, ethereum.CallMsg{To: &to, Data: selectorSlot0}, nil)
+		return rpcHTTP.CallContract(c, ethereum.CallMsg{To: &wbnbAddr, Data: data}, nil)
 	})
 	if err != nil {
-		return 0, fmt.Errorf("slot0 call: %w", err)
-	}
-	if len(slot0Result) < 32 {
-		return 0, fmt.Errorf("slot0 返回 %d bytes", len(slot0Result))
-	}
-	sqrtPriceX96 := new(big.Int).SetBytes(slot0Result[0:32])
-	if sqrtPriceX96.Sign() == 0 {
-		return 0, fmt.Errorf("pool 尚未初始化（sqrtPriceX96=0）")
+		return 0, fmt.Errorf("WBNB balanceOf failed: %w", err)
 	}
 
-	liqResult, err := rpcCallWithRetry(context.Background(), func(ctx context.Context) ([]byte, error) {
-		c, cancel := context.WithTimeout(ctx, 8*time.Second)
-		defer cancel()
-		return rpcHTTP.CallContract(c, ethereum.CallMsg{To: &to, Data: selectorLiquidity}, nil)
-	})
-	if err != nil {
-		return 0, fmt.Errorf("liquidity call: %w", err)
-	}
-	if len(liqResult) < 32 {
-		return 0, fmt.Errorf("liquidity 返回 %d bytes", len(liqResult))
-	}
-	liquidity := new(big.Int).SetBytes(liqResult[0:32])
-	if liquidity.Sign() == 0 {
-		return 0, fmt.Errorf("当前档位流动性为 0")
+	if len(result) < 32 {
+		return 0, fmt.Errorf("balanceOf 返回长度不足")
 	}
 
-	q96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	var virtualBNBWei *big.Int
-	if isToken0WBNB {
-		num := new(big.Int).Mul(liquidity, q96)
-		virtualBNBWei = new(big.Int).Div(num, sqrtPriceX96)
-	} else {
-		num := new(big.Int).Mul(liquidity, sqrtPriceX96)
-		virtualBNBWei = new(big.Int).Div(num, q96)
-	}
-
-	bnb, _ := new(big.Float).Quo(new(big.Float).SetInt(virtualBNBWei), big.NewFloat(1e18)).Float64()
-	return bnb, nil
+	bal := new(big.Int).SetBytes(result[0:32])
+	f, _ := new(big.Float).Quo(new(big.Float).SetInt(bal), big.NewFloat(1e18)).Float64()
+	return f, nil
 }
 
 // ================== 聪明钱扫描 ==================
@@ -765,7 +748,7 @@ func countSmartBuys(tokenAddr, poolAddr string, createdBlock uint64) (map[string
 				// 从 Log Data 中解析转账金额 (uint256)
 				amount := new(big.Int).SetBytes(lg.Data)
 				// 暂时记为 0 USD，后续可根据 Token 价格计算
-				amountUSD := 0.0 
+				amountUSD := 0.0
 				_ = amount // 避免未使用变量警告
 
 				// 记录交互轨迹到数据库
