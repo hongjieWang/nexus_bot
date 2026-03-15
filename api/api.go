@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // StartAPIServer 启动给 React Dashboard 调用的后端 API
@@ -77,6 +79,9 @@ func StartAPIServer() {
 			"active_tokens": activeTokens,
 		})
 	}))
+
+	// Prometheus Metrics Endpoint
+	mux.Handle("/metrics", promhttp.Handler())
 
 	slog.Info("🌐 React Dashboard API Server 启动于 :18080")
 	if err := http.ListenAndServe(":18080", mux); err != nil {

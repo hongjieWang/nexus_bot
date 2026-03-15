@@ -1,10 +1,33 @@
 package main
 
 import (
+	"bot/config"
 	"bot/database"
 	"log/slog"
+	"strconv"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+var (
+	alphaClustersTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "alpha_clusters_total",
+		Help: "Total number of smart wallet clusters identified",
+	})
+	sybilFilteredWallets = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "sybil_filtered_wallets",
+		Help: "Current number of wallets filtered/flagged as sybil matrix",
+	})
+)
+
+// traceFundingSource 资金溯源模拟函数 (连接 CEX 提币热钱包 / 混币器)
+func traceFundingSource(w1, w2 string) bool {
+	// 实际生产中应调用内部图数据库或缓存 API 匹配资金来源
+	// 占位逻辑：默认目前无同源特征
+	return false
+}
 
 // startAlphaEngine 启动 Phase 3: 聪明钱 Alpha 挖掘与防女巫/MEV 引擎
 func startAlphaEngine() {
@@ -92,6 +115,9 @@ func evaluateSmartWallets() {
 	// 简单的同车分析：如果两个钱包总是买同样的代币，标记为相同实体 (Cluster)
 	detectClusters()
 
+	// 5. 聚合实体战绩 (实体 PnL / WinRate 汇总)
+	aggregateEntities()
+
 	slog.Info("✅ [Alpha Engine] 聪明钱深度分析完毕", "total_wallets", len(wallets))
 }
 
@@ -117,7 +143,20 @@ func detectClusters() {
 		tokenToInteractions[it.TokenAddress] = append(tokenToInteractions[it.TokenAddress], it)
 	}
 
-	// 记录两两钱包在极短时间内的同车次数 (加强版防误判：例如 15 分钟内共同买入)
+	timeWinStr := config.GetConfig("ALPHA_CLUSTER_TIME_WINDOW_MINS")
+	timeWinMins := 15
+	if v, err := strconv.Atoi(timeWinStr); err == nil && v > 0 {
+		timeWinMins = v
+	}
+	timeWin := time.Duration(timeWinMins) * time.Minute
+
+	thresholdStr := config.GetConfig("ALPHA_CLUSTER_THRESHOLD")
+	threshold := 3
+	if v, err := strconv.Atoi(thresholdStr); err == nil && v > 0 {
+		threshold = v
+	}
+
+	// 记录两两钱包在极短时间内的同车权重分数 (加强版防误判：例如 15 分钟内共同买入)
 	coOccurrence := make(map[string]map[string]int)
 	walletSet := make(map[string]bool)
 
@@ -130,8 +169,8 @@ func detectClusters() {
 		for i := 0; i < n; i++ {
 			walletSet[tokenInteracts[i].Wallet] = true
 			for j := i + 1; j < n; j++ {
-				// 如果两笔交易相差超过 15 分钟，说明并非同一批脚本发出的狙击，跳过
-				if tokenInteracts[j].Timestamp.Sub(tokenInteracts[i].Timestamp) > 15*time.Minute {
+				// 如果两笔交易相差超过设定时间窗口，说明并非同一批脚本发出的狙击，跳过
+				if tokenInteracts[j].Timestamp.Sub(tokenInteracts[i].Timestamp) > timeWin {
 					break // 后面的时间差更大
 				}
 				
@@ -145,7 +184,14 @@ func detectClusters() {
 				if coOccurrence[w1] == nil {
 					coOccurrence[w1] = make(map[string]int)
 				}
-				coOccurrence[w1][w2]++
+				
+				// 计算权重打分：除了单纯同车 1 次外，如果资金溯源匹配，直接大幅增加共现权重
+				weight := 1
+				if traceFundingSource(w1, w2) {
+					weight += 5 
+				}
+				
+				coOccurrence[w1][w2] += weight
 			}
 		}
 	}
@@ -178,11 +224,11 @@ func detectClusters() {
 		}
 	}
 
-	// 根据同车次数阈值进行连边 (Union)
-	// 阈值：如果在 15 分钟内共同狙击过 >= 3 个相同的土狗，判定为女巫/矩阵号
+	// 根据同车次数/权重阈值进行连边 (Union)
+	// 阈值：如果在设定时间窗口内共同狙击过且累积权重 >= threshold，判定为女巫/矩阵号
 	for w1, peers := range coOccurrence {
-		for w2, count := range peers {
-			if count >= 3 {
+		for w2, weightScore := range peers {
+			if weightScore >= threshold {
 				union(w1, w2)
 			}
 		}
@@ -215,6 +261,45 @@ func detectClusters() {
 	}
 
 	if totalNodes > 0 {
+		sybilFilteredWallets.Set(float64(totalNodes))
+		alphaClustersTotal.Add(float64(clusterIndex - 1))
 		slog.Info("🔗 [Alpha Engine] 实体聚类(防女巫)完成", "identified_nodes", totalNodes, "total_clusters", clusterIndex-1)
+	}
+}
+
+// aggregateEntities 将同一个 ClusterID 的多个钱包战绩聚合到 SmartEntity 表
+func aggregateEntities() {
+	type Result struct {
+		ClusterID   string
+		WalletCount int
+		TotalTrades int
+		AvgWinRate  float64
+		AvgROI      float64
+		AvgScore    float64
+	}
+
+	var results []Result
+	// GORM Group By query
+	database.DB.Model(&database.SmartWallet{}).
+		Select("cluster_id, count(address) as wallet_count, sum(total_trades) as total_trades, avg(win_rate) as avg_win_rate, avg(roi) as avg_roi, avg(score) as avg_score").
+		Where("cluster_id != '' AND is_mev = ?", false).
+		Group("cluster_id").
+		Scan(&results)
+
+	for _, r := range results {
+		entity := database.SmartEntity{
+			ID:          r.ClusterID,
+			WalletCount: r.WalletCount,
+			TotalTrades: r.TotalTrades,
+			WinRate:     r.AvgWinRate,
+			ROI:         r.AvgROI,
+			Score:       r.AvgScore,
+		}
+		// Upsert (存在就更新，不存在就插入)
+		database.DB.Save(&entity)
+	}
+
+	if len(results) > 0 {
+		slog.Info("🧬 [Alpha Engine] 实体 (Entity) 聚合完成", "total_entities", len(results))
 	}
 }

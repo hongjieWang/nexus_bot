@@ -59,6 +59,18 @@ type SmartWallet struct {
 	UpdatedAt   time.Time `gorm:"autoUpdateTime"`
 }
 
+// SmartEntity 模型：用于聚合被判定为同一个矩阵号/女巫的多个钱包战绩
+type SmartEntity struct {
+	ID          string    `gorm:"primaryKey;type:varchar(64)"` // 对应 SmartWallet 的 ClusterID
+	WalletCount int       `gorm:"type:int;default:0"`          // 实体包含的钱包数量
+	TotalTrades int       `gorm:"type:int;default:0"`          // 实体总交易笔数
+	WinRate     float64   `gorm:"type:double;default:0.0"`     // 实体总胜率
+	ROI         float64   `gorm:"type:double;default:0.0"`     // 实体平均回报率
+	Score       float64   `gorm:"type:double;default:50.0"`    // 实体最终权重得分
+	CreatedAt   time.Time `gorm:"autoCreateTime"`
+	UpdatedAt   time.Time `gorm:"autoUpdateTime"`
+}
+
 // SmartWalletTrade 模型：记录聪明钱的每一笔操作轨迹 (用于后续回测与打分)
 type SmartWalletTrade struct {
 	ID           uint      `gorm:"primaryKey"`
@@ -92,7 +104,7 @@ func InitDB() {
 	}
 
 	// 自动迁移模式，确保表结构与结构体一致
-	err = DB.AutoMigrate(&Token{}, &TradeHistory{}, &SmartWallet{}, &SmartWalletTrade{}, &SystemConfig{})
+	err = DB.AutoMigrate(&Token{}, &TradeHistory{}, &SmartWallet{}, &SmartEntity{}, &SmartWalletTrade{}, &SystemConfig{})
 	if err != nil {
 		slog.Error("MySQL 表结构迁移失败", "err", err)
 		return
