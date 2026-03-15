@@ -95,40 +95,50 @@ func evaluateSmartWallets() {
 	slog.Info("✅ [Alpha Engine] 聪明钱深度分析完毕", "total_wallets", len(wallets))
 }
 
-// detectClusters 简单的女巫/矩阵号聚类算法
+// detectClusters 基于 Union-Find 和时间窗口的女巫/矩阵号聚类算法
 func detectClusters() {
-	// 查找最热门的 Token (被最多聪明钱买过的)
+	// 查找最近 7 天的 Token 交互记录
 	type TokenInteraction struct {
 		TokenAddress string
 		Wallet       string
+		Timestamp    time.Time
 	}
 
 	var interactions []TokenInteraction
-	// 近期 7 天的记录
 	database.DB.Table("smart_wallet_trades").
-		Select("token_address, wallet").
+		Select("token_address, wallet, timestamp").
 		Where("timestamp > ?", time.Now().Add(-7*24*time.Hour)).
-		Group("token_address, wallet").
+		Order("token_address, timestamp ASC").
 		Scan(&interactions)
 
-	// 构建 Token -> []Wallets 的反向映射
-	tokenToWallets := make(map[string][]string)
+	// 构建 Token -> []TokenInteraction 的映射
+	tokenToInteractions := make(map[string][]TokenInteraction)
 	for _, it := range interactions {
-		tokenToWallets[it.TokenAddress] = append(tokenToWallets[it.TokenAddress], it.Wallet)
+		tokenToInteractions[it.TokenAddress] = append(tokenToInteractions[it.TokenAddress], it)
 	}
 
-	// 查找高度重合的钱包组合 (极其简化的聚类示例)
-	// 现实中需要基于并查集 (Union-Find) 或者 K-Means 处理，这里做个基础框架。
-	// 记录两两钱包同车次数
+	// 记录两两钱包在极短时间内的同车次数 (加强版防误判：例如 15 分钟内共同买入)
 	coOccurrence := make(map[string]map[string]int)
+	walletSet := make(map[string]bool)
 
-	for _, wallets := range tokenToWallets {
-		if len(wallets) < 2 {
+	for _, tokenInteracts := range tokenToInteractions {
+		n := len(tokenInteracts)
+		if n < 2 {
 			continue
 		}
-		for i := 0; i < len(wallets); i++ {
-			for j := i + 1; j < len(wallets); j++ {
-				w1, w2 := wallets[i], wallets[j]
+		// O(N^2) 扫描单 Token 内的距离，因为已经按时间排序，可以通过滑动窗口优化，这里暂用简单的双重循环
+		for i := 0; i < n; i++ {
+			walletSet[tokenInteracts[i].Wallet] = true
+			for j := i + 1; j < n; j++ {
+				// 如果两笔交易相差超过 15 分钟，说明并非同一批脚本发出的狙击，跳过
+				if tokenInteracts[j].Timestamp.Sub(tokenInteracts[i].Timestamp) > 15*time.Minute {
+					break // 后面的时间差更大
+				}
+				
+				w1, w2 := tokenInteracts[i].Wallet, tokenInteracts[j].Wallet
+				if w1 == w2 {
+					continue
+				}
 				if w1 > w2 {
 					w1, w2 = w2, w1 // 保证顺序一致
 				}
@@ -140,34 +150,71 @@ func detectClusters() {
 		}
 	}
 
-	// 如果同车次数 >= 3，则认为是同一个矩阵/女巫号
-	clusterMap := make(map[string]string)
-	clusterIndex := 1
+	// === Union-Find (并查集) 实现 ===
+	parent := make(map[string]string)
+	
+	// 初始化：每个节点各自为独立集合
+	for w := range walletSet {
+		parent[w] = w
+	}
 
+	// 查找根节点 (带路径压缩)
+	var find func(string) string
+	find = func(i string) string {
+		if parent[i] == i {
+			return i
+		}
+		parent[i] = find(parent[i])
+		return parent[i]
+	}
+
+	// 合并两个集合
+	union := func(i, j string) {
+		rootI := find(i)
+		rootJ := find(j)
+		if rootI != rootJ {
+			// 简单的将一个根指向另一个，不需要 rank
+			parent[rootI] = rootJ 
+		}
+	}
+
+	// 根据同车次数阈值进行连边 (Union)
+	// 阈值：如果在 15 分钟内共同狙击过 >= 3 个相同的土狗，判定为女巫/矩阵号
 	for w1, peers := range coOccurrence {
 		for w2, count := range peers {
 			if count >= 3 {
-				// 找到女巫，分配同一个 ClusterID
-				cID := clusterMap[w1]
-				if cID == "" {
-					cID = clusterMap[w2]
-				}
-				if cID == "" {
-					cID = "CLUSTER-" + time.Now().Format("060102") + "-" + string(rune('A'+clusterIndex))
-					clusterIndex++
-				}
-				clusterMap[w1] = cID
-				clusterMap[w2] = cID
+				union(w1, w2)
 			}
 		}
 	}
 
-	// 更新数据库
-	for walletAddr, clusterID := range clusterMap {
-		database.DB.Model(&database.SmartWallet{}).Where("address = ?", walletAddr).Update("cluster_id", clusterID)
+	// 提取聚类结果
+	clusters := make(map[string][]string)
+	for w := range walletSet {
+		r := find(w)
+		clusters[r] = append(clusters[r], w)
 	}
 
-	if len(clusterMap) > 0 {
-		slog.Info("🔗 [Alpha Engine] 实体聚类(防女巫)完成", "identified_nodes", len(clusterMap), "total_clusters", clusterIndex-1)
+	// 写入数据库
+	clusterIndex := 1
+	totalNodes := 0
+
+	for root, members := range clusters {
+		// 只有包含 2 个及以上成员的才算有效 Cluster
+		if len(members) > 1 {
+			cID := "CLUSTER-" + time.Now().Format("060102") + "-" + string(rune('A'+clusterIndex-1))
+			clusterIndex++
+			
+			for _, w := range members {
+				database.DB.Model(&database.SmartWallet{}).
+					Where("address = ?", w).
+					Update("cluster_id", cID)
+				totalNodes++
+			}
+		}
+	}
+
+	if totalNodes > 0 {
+		slog.Info("🔗 [Alpha Engine] 实体聚类(防女巫)完成", "identified_nodes", totalNodes, "total_clusters", clusterIndex-1)
 	}
 }
