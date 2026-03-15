@@ -77,6 +77,7 @@ type SmartWalletTrade struct {
 	Wallet       string    `gorm:"type:varchar(64);index"`
 	TokenAddress string    `gorm:"type:varchar(64);index"`
 	Action       string    `gorm:"type:varchar(10)"` // "BUY" / "SELL"
+	AmountUSD    float64   `gorm:"type:double"`      // 交易金额 (USD)
 	BlockNum     uint64    `gorm:"type:bigint"`
 	Timestamp    time.Time `gorm:"autoCreateTime"`
 }
@@ -138,7 +139,7 @@ func SyncSmartWalletsToDB(wallets map[string]string) {
 }
 
 // recordSmartWalletTrade 记录聪明钱交互轨迹
-func RecordSmartWalletTrade(walletAddr, tokenAddr, action string, blockNum uint64) {
+func RecordSmartWalletTrade(walletAddr, tokenAddr, action string, amountUSD float64, blockNum uint64) {
 	if DB == nil {
 		return
 	}
@@ -146,6 +147,7 @@ func RecordSmartWalletTrade(walletAddr, tokenAddr, action string, blockNum uint6
 		Wallet:       walletAddr,
 		TokenAddress: tokenAddr,
 		Action:       action,
+		AmountUSD:    amountUSD,
 		BlockNum:     blockNum,
 	}
 	DB.Create(&trade)

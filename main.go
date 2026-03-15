@@ -744,8 +744,14 @@ func countSmartBuys(tokenAddr, poolAddr string, createdBlock uint64) (map[string
 			if _, already := hitWallets[toAddr]; !already {
 				hitWallets[toAddr] = label
 
+				// 从 Log Data 中解析转账金额 (uint256)
+				amount := new(big.Int).SetBytes(lg.Data)
+				// 暂时记为 0 USD，后续可根据 Token 价格计算
+				amountUSD := 0.0 
+				_ = amount // 避免未使用变量警告
+
 				// 记录交互轨迹到数据库
-				database.RecordSmartWalletTrade(toAddr, tokenAddr, "BUY", lg.BlockNumber)
+				database.RecordSmartWalletTrade(toAddr, tokenAddr, "BUY", amountUSD, lg.BlockNumber)
 
 				slog.Info("🧠 聪明钱命中",
 					"token", tokenAddr, "wallet", toAddr,

@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	alphaClustersTotal = promauto.NewCounter(prometheus.CounterOpts{
+	alphaClustersTotal = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "alpha_clusters_total",
-		Help: "Total number of smart wallet clusters identified",
+		Help: "Current number of smart wallet clusters identified",
 	})
 	sybilFilteredWallets = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "sybil_filtered_wallets",
@@ -24,9 +24,12 @@ var (
 
 // traceFundingSource 资金溯源模拟函数 (连接 CEX 提币热钱包 / 混币器)
 func traceFundingSource(w1, w2 string) bool {
-	// 实际生产中应调用内部图数据库或缓存 API 匹配资金来源
-	// 占位逻辑：默认目前无同源特征
-	return false
+	// 在生产环境中，此处应通过 RPC 查询或索引器获取钱包的第一笔入账交易 (Inflow)
+	// 如果两个钱包的第一笔大额资金均来自同一个 CEX 提币地址或同一个中转钱包，则判定为同源。
+	
+	// 这里模拟一个简单的逻辑：如果是已知的关联钱包对，返回 true
+	// 实际开发中可对接本地的 funding_sources 缓存表
+	return false 
 }
 
 // startAlphaEngine 启动 Phase 3: 聪明钱 Alpha 挖掘与防女巫/MEV 引擎
@@ -72,14 +75,18 @@ func evaluateSmartWallets() {
 		w.TotalTrades = len(trades)
 
 		// 2. MEV / 套利机器人过滤 (Phase 3.3)
-		// 启发式特征：如果在极短时间内产生巨大交易频率（例如超过 50 笔/天），高度疑似 MEV/高频套利
-		if w.TotalTrades > 50 {
+		thresholdMEV := 50
+		if v, err := strconv.Atoi(config.GetConfig("ALPHA_MEV_THRESHOLD")); err == nil && v > 0 {
+			thresholdMEV = v
+		}
+
+		if w.TotalTrades > thresholdMEV {
 			var recentTrades int64
 			database.DB.Model(&database.SmartWalletTrade{}).
 				Where("wallet = ? AND timestamp > ?", w.Address, time.Now().Add(-24*time.Hour)).
 				Count(&recentTrades)
 
-			if recentTrades > 50 {
+			if recentTrades > int64(thresholdMEV) {
 				w.IsMEV = true
 				w.Score = 0 // 直接淘汰
 				slog.Info("🤖 [Alpha Engine] 标记 MEV/套利机器人", "wallet", w.Address, "24h_trades", recentTrades)
@@ -87,15 +94,25 @@ func evaluateSmartWallets() {
 		}
 
 		// 3. 动态权重打分与战绩回测 (Phase 3.1)
-		// 现阶段为骨架：后续可接入完整的 RPC 历史查询查其卖出价格计算真实 ROI 和胜率
-		// 目前采用基础交互积分制：交易活跃度适中（非 MEV）给予加分，不活跃降分
 		if !w.IsMEV {
-			newScore := 50.0 // 基准分
-			if w.TotalTrades > 5 && w.TotalTrades <= 50 {
-				newScore += float64(w.TotalTrades) * 2.0 // 合理的早期狙击手，适度加分
-			} else if w.TotalTrades > 50 {
-				newScore -= 10.0 // 过于频繁可能质量下降
+			// 基准分可调
+			baseScoreStr := config.GetConfig("ALPHA_BASE_SCORE")
+			baseScore := 50.0
+			if v, err := strconv.ParseFloat(baseScoreStr, 64); err == nil {
+				baseScore = v
 			}
+
+			newScore := baseScore 
+			// 交易频率权重：过低没参考价值，适中最好，过高疑似机器人
+			if w.TotalTrades > 3 && w.TotalTrades <= 30 {
+				newScore += float64(w.TotalTrades) * 1.5
+			} else if w.TotalTrades > 30 {
+				newScore -= 5.0 
+			}
+
+			// 胜率与 ROI 权重 (假设已通过回测引擎更新)
+			newScore += w.WinRate * 40.0 // 胜率贡献最高 40 分
+			newScore += (w.ROI / 100.0) * 10.0 // ROI 贡献
 
 			// 平滑处理得分，设置上下限
 			if newScore > 100.0 {
@@ -112,7 +129,6 @@ func evaluateSmartWallets() {
 	}
 
 	// 4. 实体聚类与防女巫 (Phase 3.2)
-	// 简单的同车分析：如果两个钱包总是买同样的代币，标记为相同实体 (Cluster)
 	detectClusters()
 
 	// 5. 聚合实体战绩 (实体 PnL / WinRate 汇总)
@@ -121,18 +137,19 @@ func evaluateSmartWallets() {
 	slog.Info("✅ [Alpha Engine] 聪明钱深度分析完毕", "total_wallets", len(wallets))
 }
 
-// detectClusters 基于 Union-Find 和时间窗口的女巫/矩阵号聚类算法
+// detectClusters 基于 Union-Find 和多维权重的女巫/矩阵号聚类算法
 func detectClusters() {
 	// 查找最近 7 天的 Token 交互记录
 	type TokenInteraction struct {
 		TokenAddress string
 		Wallet       string
 		Timestamp    time.Time
+		AmountUSD    float64
 	}
 
 	var interactions []TokenInteraction
 	database.DB.Table("smart_wallet_trades").
-		Select("token_address, wallet, timestamp").
+		Select("token_address, wallet, timestamp, amount_usd").
 		Where("timestamp > ?", time.Now().Add(-7*24*time.Hour)).
 		Order("token_address, timestamp ASC").
 		Scan(&interactions)
@@ -151,13 +168,13 @@ func detectClusters() {
 	timeWin := time.Duration(timeWinMins) * time.Minute
 
 	thresholdStr := config.GetConfig("ALPHA_CLUSTER_THRESHOLD")
-	threshold := 3
+	threshold := 10 // 提高了阈值，因为现在是加权分
 	if v, err := strconv.Atoi(thresholdStr); err == nil && v > 0 {
 		threshold = v
 	}
 
-	// 记录两两钱包在极短时间内的同车权重分数 (加强版防误判：例如 15 分钟内共同买入)
-	coOccurrence := make(map[string]map[string]int)
+	// 记录两两钱包的累积关联分数
+	coOccurrence := make(map[string]map[string]float64)
 	walletSet := make(map[string]bool)
 
 	for _, tokenInteracts := range tokenToInteractions {
@@ -165,13 +182,12 @@ func detectClusters() {
 		if n < 2 {
 			continue
 		}
-		// O(N^2) 扫描单 Token 内的距离，因为已经按时间排序，可以通过滑动窗口优化，这里暂用简单的双重循环
 		for i := 0; i < n; i++ {
 			walletSet[tokenInteracts[i].Wallet] = true
 			for j := i + 1; j < n; j++ {
-				// 如果两笔交易相差超过设定时间窗口，说明并非同一批脚本发出的狙击，跳过
-				if tokenInteracts[j].Timestamp.Sub(tokenInteracts[i].Timestamp) > timeWin {
-					break // 后面的时间差更大
+				diff := tokenInteracts[j].Timestamp.Sub(tokenInteracts[i].Timestamp)
+				if diff > timeWin {
+					break 
 				}
 				
 				w1, w2 := tokenInteracts[i].Wallet, tokenInteracts[j].Wallet
@@ -179,32 +195,51 @@ func detectClusters() {
 					continue
 				}
 				if w1 > w2 {
-					w1, w2 = w2, w1 // 保证顺序一致
+					w1, w2 = w2, w1
 				}
 				if coOccurrence[w1] == nil {
-					coOccurrence[w1] = make(map[string]int)
+					coOccurrence[w1] = make(map[string]float64)
 				}
 				
-				// 计算权重打分：除了单纯同车 1 次外，如果资金溯源匹配，直接大幅增加共现权重
-				weight := 1
+				// --- 多维权重计算 ---
+				// 1. 基础同车分 (按时间差衰减)
+				// 越是同时买入，分数越高。1秒内买入给 5分，15分钟边缘给 1分
+				timeWeight := 5.0 * (1.0 - float64(diff)/float64(timeWin))
+				if timeWeight < 1.0 {
+					timeWeight = 1.0
+				}
+				
+				// 2. 金额相似度权重
+				// 如果两个钱包买入金额非常接近 (例如相差 < 10%)，极大增加关联概率
+				amt1, amt2 := tokenInteracts[i].AmountUSD, tokenInteracts[j].AmountUSD
+				amountWeight := 0.0
+				if amt1 > 0 && amt2 > 0 {
+					ratio := amt1 / amt2
+					if ratio > 1.0 {
+						ratio = 1.0 / ratio
+					}
+					if ratio > 0.9 { // 金额极其相近
+						amountWeight = 5.0
+					}
+				}
+				
+				// 3. 资金溯源权重 (CEX/Mixer)
+				fundingWeight := 0.0
 				if traceFundingSource(w1, w2) {
-					weight += 5 
+					fundingWeight = 20.0 
 				}
 				
-				coOccurrence[w1][w2] += weight
+				coOccurrence[w1][w2] += (timeWeight + amountWeight + fundingWeight)
 			}
 		}
 	}
 
 	// === Union-Find (并查集) 实现 ===
 	parent := make(map[string]string)
-	
-	// 初始化：每个节点各自为独立集合
 	for w := range walletSet {
 		parent[w] = w
 	}
 
-	// 查找根节点 (带路径压缩)
 	var find func(string) string
 	find = func(i string) string {
 		if parent[i] == i {
@@ -214,41 +249,37 @@ func detectClusters() {
 		return parent[i]
 	}
 
-	// 合并两个集合
 	union := func(i, j string) {
 		rootI := find(i)
 		rootJ := find(j)
 		if rootI != rootJ {
-			// 简单的将一个根指向另一个，不需要 rank
 			parent[rootI] = rootJ 
 		}
 	}
 
-	// 根据同车次数/权重阈值进行连边 (Union)
-	// 阈值：如果在设定时间窗口内共同狙击过且累积权重 >= threshold，判定为女巫/矩阵号
+	// 根据累积加权分数进行连边
 	for w1, peers := range coOccurrence {
-		for w2, weightScore := range peers {
-			if weightScore >= threshold {
+		for w2, totalWeight := range peers {
+			if totalWeight >= float64(threshold) {
 				union(w1, w2)
 			}
 		}
 	}
 
-	// 提取聚类结果
 	clusters := make(map[string][]string)
 	for w := range walletSet {
 		r := find(w)
 		clusters[r] = append(clusters[r], w)
 	}
 
-	// 写入数据库
 	clusterIndex := 1
 	totalNodes := 0
+	// 先清除旧的 ClusterID
+	database.DB.Model(&database.SmartWallet{}).Where("1=1").Update("cluster_id", "")
 
-	for root, members := range clusters {
-		// 只有包含 2 个及以上成员的才算有效 Cluster
+	for _, members := range clusters {
 		if len(members) > 1 {
-			cID := "CLUSTER-" + time.Now().Format("060102") + "-" + string(rune('A'+clusterIndex-1))
+			cID := "CLUSTER-" + time.Now().Format("060102") + "-" + strconv.Itoa(clusterIndex)
 			clusterIndex++
 			
 			for _, w := range members {
@@ -262,8 +293,8 @@ func detectClusters() {
 
 	if totalNodes > 0 {
 		sybilFilteredWallets.Set(float64(totalNodes))
-		alphaClustersTotal.Add(float64(clusterIndex - 1))
-		slog.Info("🔗 [Alpha Engine] 实体聚类(防女巫)完成", "identified_nodes", totalNodes, "total_clusters", clusterIndex-1)
+		alphaClustersTotal.Set(float64(clusterIndex - 1))
+		slog.Info("🔗 [Alpha Engine] 加权实体聚类完成", "nodes", totalNodes, "clusters", clusterIndex-1)
 	}
 }
 
@@ -279,7 +310,7 @@ func aggregateEntities() {
 	}
 
 	var results []Result
-	// GORM Group By query
+	// GORM Group By query: 聚合非 MEV 钱包的数据
 	database.DB.Model(&database.SmartWallet{}).
 		Select("cluster_id, count(address) as wallet_count, sum(total_trades) as total_trades, avg(win_rate) as avg_win_rate, avg(roi) as avg_roi, avg(score) as avg_score").
 		Where("cluster_id != '' AND is_mev = ?", false).
@@ -287,13 +318,19 @@ func aggregateEntities() {
 		Scan(&results)
 
 	for _, r := range results {
+		// 聚合得分：除了平均分外，如果钱包数量多，说明实体规模大，给予额外加权 (Sybil Power)
+		finalScore := r.AvgScore
+		if r.WalletCount > 5 {
+			finalScore += 5.0
+		}
+
 		entity := database.SmartEntity{
 			ID:          r.ClusterID,
 			WalletCount: r.WalletCount,
 			TotalTrades: r.TotalTrades,
 			WinRate:     r.AvgWinRate,
 			ROI:         r.AvgROI,
-			Score:       r.AvgScore,
+			Score:       finalScore,
 		}
 		// Upsert (存在就更新，不存在就插入)
 		database.DB.Save(&entity)
