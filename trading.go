@@ -292,17 +292,19 @@ func (e *TradingEngine) applyFill(side string, qty, execPrice float64) {
 
 	// 重新计算持仓均价
 	if math.Abs(newQty) > 0.0001 {
-		if math.Signbit(oldQty) == math.Signbit(newQty) && oldQty != 0 {
-			// 加仓
-			e.entryPrice = (e.entryPrice*math.Abs(oldQty) + execPrice*math.Abs(qty)) / math.Abs(newQty)
-		} else if oldQty == 0 {
+		isAdding := (oldQty > 0 && qty > 0) || (oldQty < 0 && qty < 0)
+		if oldQty == 0 {
 			// 新开仓
 			e.entryPrice = execPrice
 			sendTradingAlert("open", newQty, e.entryPrice, 0, 0, 0)
-		} else {
+		} else if isAdding {
+			// 加仓：更新加权均价
+			e.entryPrice = (e.entryPrice*math.Abs(oldQty) + execPrice*math.Abs(qty)) / math.Abs(newQty)
+		} else if (newQty > 0) != (oldQty > 0) {
 			// 仓位反转
 			e.entryPrice = execPrice
 		}
+		// 部分平仓：entryPrice 保持不变
 	} else {
 		e.entryPrice = 0
 		newQty = 0

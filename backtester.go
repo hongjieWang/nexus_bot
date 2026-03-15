@@ -90,7 +90,7 @@ func RunBacktest(strat strategy.BaseStrategy, symbol, interval string, limit int
 			if filled {
 				// 成交逻辑
 				qty := o.Qty
-				
+
 				// 扣除手续费
 				balance -= fillPrice * qty * feeRate
 
@@ -129,13 +129,15 @@ func RunBacktest(strat strategy.BaseStrategy, symbol, interval string, limit int
 				// 更新持仓
 				newQty := positionQty + qty
 				if math.Abs(newQty) > 0.0001 {
-					if math.Signbit(positionQty) == math.Signbit(newQty) && positionQty != 0 {
+					isAdding := (positionQty > 0 && qty > 0) || (positionQty < 0 && qty < 0)
+					if positionQty == 0 {
+						entryPrice = fillPrice
+					} else if isAdding {
 						entryPrice = (entryPrice*math.Abs(positionQty) + fillPrice*math.Abs(qty)) / math.Abs(newQty)
-					} else if positionQty == 0 {
-						entryPrice = fillPrice
-					} else {
-						entryPrice = fillPrice
+					} else if (newQty > 0) != (positionQty > 0) {
+						entryPrice = fillPrice // 仓位反转
 					}
+					// 部分平仓：entryPrice 保持不变
 				} else {
 					entryPrice = 0
 					newQty = 0
@@ -158,7 +160,10 @@ func RunBacktest(strat strategy.BaseStrategy, symbol, interval string, limit int
 
 		snapshot := strategy.MarketSnapshot{
 			Instrument: symbol,
-			MidPrice:   currentKline.Close, // Tick 驱动以收盘价为准
+			MidPrice:   currentKline.Close,
+			Bid:        currentKline.Close,
+			Ask:        currentKline.Close,
+			Volume24h:  currentKline.Volume,
 		}
 
 		orders := strat.OnTick(snapshot, ctx)
@@ -189,7 +194,7 @@ func RunBacktest(strat strategy.BaseStrategy, symbol, interval string, limit int
 				if o.OrderType == "Market" {
 					// 关键修复：以【下一根】K 线的开盘价成交，消除 Look-ahead Bias
 					fillPrice := klines[i+1].Open
-					
+
 					// 扣除手续费
 					balance -= fillPrice * qty * feeRate
 
@@ -226,11 +231,15 @@ func RunBacktest(strat strategy.BaseStrategy, symbol, interval string, limit int
 
 					newQty := positionQty + sideQty
 					if math.Abs(newQty) > 0.0001 {
-						if math.Signbit(positionQty) == math.Signbit(newQty) && positionQty != 0 {
-							entryPrice = (entryPrice*math.Abs(positionQty) + fillPrice*math.Abs(qty)) / math.Abs(newQty)
-						} else {
+						isAdding := (positionQty > 0 && sideQty > 0) || (positionQty < 0 && sideQty < 0)
+						if positionQty == 0 {
 							entryPrice = fillPrice
+						} else if isAdding {
+							entryPrice = (entryPrice*math.Abs(positionQty) + fillPrice*math.Abs(sideQty)) / math.Abs(newQty)
+						} else if (newQty > 0) != (positionQty > 0) {
+							entryPrice = fillPrice // 仓位反转
 						}
+						// 部分平仓：entryPrice 保持不变
 					} else {
 						entryPrice = 0
 						newQty = 0
@@ -256,6 +265,54 @@ func RunBacktest(strat strategy.BaseStrategy, symbol, interval string, limit int
 						}
 						activeOrders[orderSeq] = &ActiveOrder{ID: orderSeq, Side: closeSide, Type: "TAKE_PROFIT_MARKET", StopPrice: tp, Qty: qty}
 					}
+
+				} else if o.OrderType == "Ioc" {
+					// IoC：立即成交，语义等同 Market，回测中以下根开盘价成交
+					fillPrice := klines[i+1].Open
+					sideQty := qty
+					if o.Side == "sell" || o.Side == "SELL" {
+						sideQty = -qty
+					}
+
+					if (positionQty > 0 && sideQty < 0) || (positionQty < 0 && sideQty > 0) {
+						closeQty := math.Min(math.Abs(positionQty), math.Abs(sideQty))
+						var pnl float64
+						if positionQty > 0 {
+							pnl = (fillPrice - entryPrice) * closeQty
+						} else {
+							pnl = (entryPrice - fillPrice) * closeQty
+						}
+						balance += pnl
+						balance -= fillPrice * closeQty * feeRate
+						totalTrades++
+						if pnl > 0 {
+							winningTrades++
+						} else {
+							losingTrades++
+						}
+						if balance > peakBalance {
+							peakBalance = balance
+						}
+						if d := peakBalance - balance; d > maxDrawdown {
+							maxDrawdown = d
+						}
+					}
+
+					newQty := positionQty + sideQty
+					if math.Abs(newQty) > 0.0001 {
+						isAdding := (positionQty > 0 && sideQty > 0) || (positionQty < 0 && sideQty < 0)
+						if positionQty == 0 {
+							entryPrice = fillPrice
+						} else if isAdding {
+							entryPrice = (entryPrice*math.Abs(positionQty) + fillPrice*math.Abs(sideQty)) / math.Abs(newQty)
+						} else if (newQty > 0) != (positionQty > 0) {
+							entryPrice = fillPrice
+						}
+					} else {
+						entryPrice = 0
+						newQty = 0
+					}
+					positionQty = newQty
 
 				} else if o.OrderType == "Gtc" {
 					orderSeq++

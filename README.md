@@ -12,6 +12,83 @@ NEXUS is a highly modular, enterprise-grade algorithmic trading suite designed f
 
 *   **🔫 DEX Sniper Engine**: Automatically snipes new liquidity pools (currently on BSC/PancakeSwap) with dynamic Gas estimation, MEV sandwich protection, and auto-Approve mechanisms.
 *   **🧠 Alpha Engine (Smart Money Tracking)**: Continuously scrapes, scores, and tracks "Smart Money" wallets. Features a built-in heuristic filter to identify and blacklist MEV/Arbitrage bots and a clustering algorithm to detect Sybil/Matrix entity networks.
+
+### 🧠 Alpha Scoring Model
+
+The Alpha Engine uses a multi-dimensional weighted scoring model to evaluate wallet quality:
+
+<style>
+.formula-box { background: #0f1219; border-radius: 8px; padding: 14px 18px; margin: 12px 0; border-left: 3px solid #00f0ff; font-family: monospace; font-size: 13px; line-height: 1.8; color: #fff; }
+.factor-row { display: flex; gap: 10px; margin-bottom: 8px; align-items: flex-start; }
+.f-tag { min-width: 60px; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; text-align: center; margin-top: 2px; }
+.f-name { font-weight: 500; font-size: 13px; color: #00f0ff; }
+.f-desc { font-size: 12px; color: #94a3b8; line-height: 1.5; }
+.weight-bar-wrap { height: 6px; background: #1e293b; border-radius: 3px; margin-top: 5px; width: 100%; }
+.weight-bar { height: 6px; border-radius: 3px; }
+.tag-a { background: #26215C; color: #CECBF6; }
+.tag-b { background: #04342C; color: #9FE1CB; }
+.tag-c { background: #412402; color: #FAC775; }
+.tag-d { background: #4A1B0C; color: #F5C4B3; }
+.tag-e { background: #042C53; color: #85B7EB; }
+</style>
+
+<div class="formula-box">
+Score = 100 × [<br>
+  &nbsp;&nbsp;W_wr &times; f_winrate(WinRate)      <span style="color:#475569">// Win Rate Component</span><br>
+  + W_roi &times; f_roi(ROI)              <span style="color:#475569">// ROI Component</span><br>
+  + W_rec &times; f_recency(LastActive)   <span style="color:#475569">// Recency Component</span><br>
+  + W_con &times; f_consistency(Trades)   <span style="color:#475569">// Consistency Component</span><br>
+  + W_ear &times; f_early(AvgBlockDelta)  <span style="color:#475569">// Early Entry Component</span><br>
+]
+</div>
+
+<div class="factor-row">
+  <div class="f-tag tag-a">W=0.35</div>
+  <div>
+    <div class="f-name">f_winrate — Win Rate (Highest Weight)</div>
+    <div class="f-desc">Calculated by resolving BUY/SELL pairs. A price increase of 20%+ after BUY is considered a win.<br>f(wr) = sigmoid(wr, center=0.55, steepness=10). A 55% win rate yields 0.5 points.</div>
+    <div class="weight-bar-wrap"><div class="weight-bar" style="width:70%;background:#7F77DD"></div></div>
+  </div>
+</div>
+
+<div class="factor-row">
+  <div class="f-tag tag-b">W=0.30</div>
+  <div>
+    <div class="f-name">f_roi — Average ROI</div>
+    <div class="f-desc">Mean ROI across all closed trades.<br>f(roi) = tanh(roi / 0.5). Squashes outliers to prevent single high-ROI "lucky" trades from skewing the total score.</div>
+    <div class="weight-bar-wrap"><div class="weight-bar" style="width:60%;background:#1D9E75"></div></div>
+  </div>
+</div>
+
+<div class="factor-row">
+  <div class="f-tag tag-c">W=0.20</div>
+  <div>
+    <div class="f-name">f_recency — Recency Component</div>
+    <div class="f-desc">Prioritizes wallets that have been active recently.<br>f(days) = e^(−days/14). Activity from 7 days ago scores 0.61; 30 days ago scores only 0.11.</div>
+    <div class="weight-bar-wrap"><div class="weight-bar" style="width:40%;background:#BA7517"></div></div>
+  </div>
+</div>
+
+<div class="factor-row">
+  <div class="f-tag tag-d">W=0.10</div>
+  <div>
+    <div class="f-name">f_consistency — Frequency Consistency</div>
+    <div class="f-desc">Penalizes noise (too few trades) and MEV bots (too many trades).<br>f(n) = 1 − |log(n/15)| / 4. Target range is 8-30 trades for a full score.</div>
+    <div class="weight-bar-wrap"><div class="weight-bar" style="width:20%;background:#D85A30"></div></div>
+  </div>
+</div>
+
+<div class="factor-row">
+  <div class="f-tag tag-e">W=0.05</div>
+  <div>
+    <div class="f-name">f_early — Early Entry Reward</div>
+    <div class="f-desc">Avg blocks from pool creation to entry. (BSC ≈ 3s/block).<br>f(blocks) = e^(−blocks/100). Entry within 50 blocks (2.5 mins) scores 0.61+.</div>
+    <div class="weight-bar-wrap"><div class="weight-bar" style="width:10%;background:#378ADD"></div></div>
+  </div>
+</div>
+
+> **Note**: To ensure accurate scoring, the Alpha Engine uses a background worker (`trackSmartWalletSells`) to scan for exit prices by resolving subsequent `Transfer` events from smart wallets back to liquidity pools or routers.
+
 *   **📉 CEX Quant Engine**: Connects to Binance Futures for algorithmic trading (e.g., Grid Market Making, Momentum Breakout, EMA/MACD/RSI strategies) with real-time position tracking and global Take Profit/Stop Loss management.
 *   **🛡️ Rug-Pull Panic Sell**: Real-time WSS listener that monitors LP `Sync` events. If liquidity is suddenly removed (Rug Pull), it overrides slippage limits (up to 50%) to execute an emergency Panic Sell in the same block.
 *   **📊 Cyberpunk React Dashboard**: A sleek, futuristic Web UI for monitoring total trades, win rates, and active tracked tokens.
@@ -81,9 +158,9 @@ npm run dev
 ```
 
 Visit `http://localhost:5173` in your browser. From the dashboard, you can securely enter your Binance API Keys and your EVM Private Key.
-所有策略通过 `strategies.json` 加载，实盘时通过 `ACTIVE_STRATEGY` 环境变量指定唯一策略 ID。
+All strategies are loaded via `strategies.json`. During live trading, use the `ACTIVE_STRATEGY` environment variable to specify a unique strategy ID.
 
-### strategies.json 格式
+### strategies.json Format
 
 ```json
 [
@@ -105,64 +182,61 @@ Visit `http://localhost:5173` in your browser. From the dashboard, you can secur
 ]
 ```
 
-### 策略一览
+### Strategy Overview
 
-#### `ema_macd_rsi` — 趋势跟踪策略
+#### `ema_macd_rsi` — Trend Following Strategy
 
-基于三均线（EMA9/21/55）、RSI(14)、MACD 的多重过滤入场：
+Entry based on triple moving average (EMA 9/21/55), RSI(14), and MACD multi-layer filtering:
 
-- **做多条件**：EMA9 > EMA21 > EMA55，价格 > EMA21，RSI 在 45–70，MACD 线 > Signal 线
-- **做空条件**：EMA9 < EMA21 < EMA55，价格 < EMA21，RSI 在 30–55，MACD 线 < Signal 线
-- **止盈止损**：ATR(14) × 4 止盈，ATR(14) × 2 止损
-- **最少 K 线**：60 根（保证 EMA55 + MACD Signal 热身完整）
+- **Long Conditions**: EMA9 > EMA21 > EMA55, Price > EMA21, RSI between 45–70, MACD Line > Signal Line.
+- **Short Conditions**: EMA9 < EMA21 < EMA55, Price < EMA21, RSI between 30–55, MACD Line < Signal Line.
+- **Take Profit/Stop Loss**: TP at ATR(14) × 4, SL at ATR(14) × 2.
+- **Minimum K-lines**: 60 candles (ensures full warmup for EMA55 + MACD Signal).
 
-#### `momentum_breakout` — 动量突破策略
+#### `momentum_breakout` — Momentum Breakout Strategy
 
-在 N 周期高低点突破且成交量放大时入场：
+Enters when price breaks out of the N-period High/Low range with increased volume:
 
-- **参数**：`lookback`（回溯周期，默认 20），`breakoutThresholdBps`（突破幅度，默认 50 bps），`volumeSurgeMult`（成交量倍数，默认 2×），`trailingStopBps`（追踪止损，默认 30 bps）
-- **追踪止损**：维护历史最高/最低价水印，止损线只向有利方向移动，平仓后自动重置
+- **Parameters**: `lookback` (lookback period, default 20), `breakoutThresholdBps` (breakout magnitude, default 50 bps), `volumeSurgeMult` (volume surge multiplier, default 2×), `trailingStopBps` (trailing stop, default 30 bps).
+- **Trailing Stop**: Maintains high/low watermarks; the stop line only moves in a favorable direction and resets automatically after closing.
 
-#### `simple_mm` — 简单做市策略
+#### `simple_mm` — Simple Market Making Strategy
 
-对称报价 Bid/Ask，含库存偏斜保护：
+Symmetric Bid/Ask quoting with inventory skew protection:
 
-- **参数**：`spreadBps`（价差，默认 20 bps），`size`（每单量）
-- **库存偏斜**：多仓累积时上移报价中心，减少继续买入的吸引力；最大持仓为 `size × 5`，超限停止单边报价
+- **Parameters**: `spreadBps` (spread, default 20 bps), `size` (order size).
+- **Inventory Skew**: Shifts the quote center upward when long positions accumulate to reduce further buying incentive; maximum position is `size × 5`, stopping one-sided quotes when exceeded.
 
-#### `grid_mm` — 网格做市策略
+#### `grid_mm` — Grid Market Making Strategy
 
-在中间价上下方各挂 N 档限价单：
+Places N-levels of limit orders above and below the mid-price:
 
-- **参数**：`gridSpacingBps`（档间距），`numLevels`（档数），`sizePerLevel`（每档量），`maxPosition`（最大持仓）
-- **ReduceOnly 模式**：当引擎传入 `ctx.ReduceOnly=true` 时，停止新网格报价，仅挂平仓单
+- **Parameters**: `gridSpacingBps` (interval), `numLevels` (levels), `sizePerLevel` (size per level), `maxPosition` (max position).
+- **ReduceOnly Mode**: Stops placing new grid orders and only places closing orders when the engine passes `ctx.ReduceOnly=true`.
 
 ---
 
-## 回测
+## 🧪 Backtesting
 
-在不启动实盘引擎的情况下验证策略参数：
+Validate strategy parameters without starting the live trading engine:
 
 ```bash
 ./nexus-bot backtest
 ```
 
-回测引擎读取 `strategies.json` 中的全部策略，每个策略运行 1500 根 15m K 线，初始资金 50 USDT。
+The backtester reads all strategies from `strategies.json`, running 1500 candles (15m interval) per strategy with an initial balance of 50 USDT.
 
-**回测结果示例：**
+**Backtest Result Example:**
 
 ```
 strategy=my_ema pnl=$12.34 win_rate=58.33% trades=24 max_drawdown=8.21% ($4.11)
 ```
 
-**回测机制说明：**
+**Backtest Engine Logic:**
 
-- 市价单以**下一根 K 线开盘价**成交，消除 look-ahead bias
-- 每笔成交扣除 **0.04% taker 手续费**
-- 挂单撮合按 K 线 High/Low 区间判断，SL/TP 挂单同样参与撮合
-## 🧪 Backtesting
-
-You can run offline backtests on historical data to validate strategy parameters without starting the live trading engine.
+- Market orders are filled at the **next candle's Open price** to eliminate look-ahead bias.
+- Each fill deducts a **0.04% Taker fee**.
+- Limit orders are matched based on the candle's High/Low range; SL/TP orders also participate in matching.
 
 Ensure you have a `strategies.json` file in your root directory:
 

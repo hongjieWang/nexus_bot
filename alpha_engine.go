@@ -323,10 +323,10 @@ func evaluateSmartWallets() {
 			w.AvgEntryBlocks = avgEntryBlocks
 
 			// 更新最后活跃时间
-			var lastTrade database.SmartWalletTrade
+			var lastTrades []database.SmartWalletTrade
 			if err := database.DB.Where("wallet = ?", w.Address).
-				Order("timestamp DESC").First(&lastTrade).Error; err == nil {
-				w.LastActiveAt = lastTrade.Timestamp
+				Order("timestamp DESC").Limit(1).Find(&lastTrades).Error; err == nil && len(lastTrades) > 0 {
+				w.LastActiveAt = lastTrades[0].Timestamp
 			}
 
 			// 关键修复：防止零值时间导致 MySQL 报错 (0000-00-00)
@@ -588,7 +588,7 @@ func trackSmartWalletSells() {
 	database.DB.Table("smart_wallet_trades").
 		Select("wallet, token_address, pool_address, min(block_num) as min_block").
 		Where("action = 'BUY' AND timestamp > ?", time.Now().Add(-7*24*time.Hour)).
-		Group("wallet, token_address").
+		Group("wallet, token_address, pool_address").
 		Scan(&records)
 
 	if len(records) == 0 {

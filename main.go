@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -44,7 +45,7 @@ const (
 	wbnb             = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
 
 	// ── 外部接口 ──────────────────────────────────────────
-	goPlusBase     = "https://api.gopluslabs.io/api/v1/token_security/56/"
+	goPlusBase     = "https://api.gopluslabs.io/api/v1/token_security/56?contract_addresses="
 	bnbPriceURL    = "https://api.binance.com/api/v3/ticker/price?symbol=BNBUSDT"
 	leaderboardURL = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/market/leaderboard/query"
 
@@ -286,7 +287,7 @@ func main() {
 	bscWSS := mustEnv("BSC_WSS_RPC")
 
 	pairSemaphore = make(chan struct{}, maxConcurrentPairs)
-	
+
 	rps := defaultRPCRPS
 	if v := os.Getenv("RPC_RPS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -785,19 +786,45 @@ func isSecureTokenV2(addr string) (bool, string) {
 	}
 	defer resp.Body.Close()
 
+	// 修复：先读取原始 body，便于打印调试信息
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, "GoPlus 响应读取失败"
+	}
+
 	var data map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := json.Unmarshal(bodyBytes, &data); err != nil {
 		return false, "GoPlus JSON 解析失败"
 	}
-	result, ok := data["result"].(map[string]interface{})
-	if !ok {
-		return false, "GoPlus result 字段异常"
+
+	// 修复：先检查 GoPlus 响应码，非 1 表示 API 层面的错误（如超频、未收录）
+	if code, ok := data["code"].(float64); ok && code != 1 {
+		msg, _ := data["message"].(string)
+		return false, fmt.Sprintf("GoPlus API 错误: code=%.0f msg=%s", code, msg)
 	}
+
+	// 修复：result 可能是 null、空对象 {}、空数组 [] 等多种形态
+	// 新币刚上链时 GoPlus 尚未收录，result 会是空对象或空数组
+	rawResult, exists := data["result"]
+	if !exists || rawResult == nil {
+		slog.Warn("GoPlus 尚未收录此 token，跳过安全审计放行", "token", addr)
+		return true, "GoPlus 未收录（新币，跳过）"
+	}
+
+	result, ok := rawResult.(map[string]interface{})
+	if !ok {
+		// result 是数组或其他类型（空数组 [] 是未收录的常见返回形式）
+		slog.Warn("GoPlus result 非对象格式，视为未收录放行", "token", addr, "raw", fmt.Sprintf("%T", rawResult))
+		return true, "GoPlus 未收录（新币，跳过）"
+	}
+
+	// 尝试两种大小写形式查找 token 数据
 	r, ok := result[strings.ToLower(addr)].(map[string]interface{})
 	if !ok {
 		r, ok = result[addr].(map[string]interface{})
 		if !ok {
-			return false, "GoPlus 未找到 token 数据"
+			slog.Warn("GoPlus result 中找不到 token 数据，视为未收录放行", "token", addr)
+			return true, "GoPlus 未收录（新币，跳过）"
 		}
 	}
 
