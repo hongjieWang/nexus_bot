@@ -244,10 +244,10 @@ func (e *TradingEngine) applyFill(side string, qty, execPrice float64) {
 	var pnl float64
 	if (oldQty > 0 && qty < 0) || (oldQty < 0 && qty > 0) {
 		closeQty := math.Min(math.Abs(oldQty), math.Abs(qty))
-		if oldQty > 0 {
-			pnl = (execPrice - e.entryPrice) / e.entryPrice * (closeQty * e.entryPrice) // 简化： (execPrice - entry) * qty
-		} else {
-			pnl = (e.entryPrice - execPrice) / e.entryPrice * (closeQty * e.entryPrice)
+		if oldQty > 0 { // Was LONG, now closing
+			pnl = (execPrice - e.entryPrice) * closeQty
+		} else { // Was SHORT, now closing
+			pnl = (e.entryPrice - execPrice) * closeQty
 		}
 
 		e.simulatedBalance += pnl

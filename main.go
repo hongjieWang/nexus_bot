@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -345,7 +346,7 @@ func main() {
 	initSniperEngine(rpcHTTP, bscWSS)
 
 	// 启动 Phase 3: 聪明钱分析引擎
-	startAlphaEngine()
+	startAlphaEngine(rpcHTTP)
 
 	// 启动 Phase 5: React Dashboard API 服务器
 	go api.StartAPIServer()
@@ -502,6 +503,7 @@ func handleV3PoolCreated(lg gethtypes.Log) {
 
 // ================== 公共处理逻辑 ==================
 func processNewPool(tokenAddr, poolAddr string, dex types.DEXVersion, feeTier uint32, isToken0WBNB bool, blockNum uint64) {
+	// ... (前面的 seen 检查逻辑保持不变)
 	seenMu.Lock()
 	if last, exists := seen[tokenAddr]; exists && time.Since(last) < seenTTL {
 		seenMu.Unlock()
@@ -522,33 +524,49 @@ func processNewPool(tokenAddr, poolAddr string, dex types.DEXVersion, feeTier ui
 	if dex == types.DEXv3 {
 		log = log.With("fee", feeStr)
 	}
-	log.Info("🆕 新 Pool 创建")
+	log.Info("🆕 新 Pool 创建，进入 V2 筛选流程...")
 
+	// V2 筛选第一关：合约安全审计
+	pass, reason := isSecureTokenV2(tokenAddr)
+	if !pass {
+		log.Warn("⛔ V2 筛选淘汰 (安全审计)", "reason", reason)
+		return
+	}
+
+	// 流动性检查 (仍然是必要的风控)
 	liqBNB, err := pollLiquidityBNB(poolAddr, dex, isToken0WBNB)
 	if err != nil {
 		log.Warn("流动性获取失败", "err", err)
 		return
 	}
-	if liqBNB < liquidityMinBNB {
-		log.Info("⏭ 流动性不足，跳过", "liqBNB", fmt.Sprintf("%.2f", liqBNB), "min", liquidityMinBNB)
+	minLiqBNB := parseEnvFloat("V2_MIN_LIQ_BNB", 3.0)
+	if liqBNB < minLiqBNB {
+		log.Info("⏭ V2 筛选淘汰 (流动性不足)", "liqBNB", fmt.Sprintf("%.2f", liqBNB), "min", minLiqBNB)
 		return
 	}
+	log.Info("✅ V2-1 安全审计与流动性通过", "liqBNB", fmt.Sprintf("%.2f", liqBNB))
 
+	// V2 筛选第二关：聪明钱流入 (高评分)
 	hitWallets, err := countSmartBuys(tokenAddr, poolAddr, blockNum)
 	if err != nil {
 		log.Warn("countSmartBuys 失败", "err", err)
 		return
 	}
-	if len(hitWallets) < smartBuyMin {
-		log.Info("⏭ 聪明钱不足，跳过", "hit", len(hitWallets), "min", smartBuyMin)
-		return
-	}
-
-	pass, reason := isQualityGoPlus(tokenAddr)
+	pass, highQualityHits := hasSmartMoneyBought(hitWallets)
 	if !pass {
-		log.Warn("⛔ GoPlus 未通过", "reason", reason)
+		log.Info("⏭ V2 筛选淘汰 (优质聪明钱不足)", "hit", highQualityHits, "min", int(parseEnvFloat("V2_MIN_SMART_MONEY", 1.0)))
 		return
 	}
+	log.Info("✅ V2-2 优质聪明钱流入通过", "hit", highQualityHits)
+
+	// V2 筛选第三关：持仓分析
+	pass, reason = isHolderDistributionSafe(tokenAddr, blockNum)
+	if !pass {
+		log.Warn("⛔ V2 筛选淘汰 (持仓分析)", "reason", reason)
+		return
+	}
+	log.Info("✅ V2-3 持仓分析通过", "reason", reason)
+
 
 	info := types.TokenInfo{
 		Address:      tokenAddr,
@@ -567,7 +585,7 @@ func processNewPool(tokenAddr, poolAddr string, dex types.DEXVersion, feeTier ui
 
 	sendDiscordAlert(info)
 	database.SaveTokenToDB(info)
-	log.Info("✅ 预警已发送并入库", "smartBuys", len(hitWallets), "liqBNB", fmt.Sprintf("%.2f", liqBNB))
+	log.Info("✅ V2 筛选全部通过，预警已发送并入库", "smartBuys", len(hitWallets), "liqBNB", fmt.Sprintf("%.2f", liqBNB))
 
 	// 自动狙击 (如果满足安全与配置条件，由引擎内部进行实盘执行)
 	go SniperBuyAndTrack(info)
@@ -769,8 +787,10 @@ func countSmartBuys(tokenAddr, poolAddr string, createdBlock uint64) (map[string
 	return hitWallets, nil
 }
 
-// ================== GoPlus 安全检查 ==================
-func isQualityGoPlus(addr string) (bool, string) {
+// ================== V2 优质 Token 筛选模块 ==================
+
+// isSecureTokenV2 是一个多维度、可配置的安全审计函数
+func isSecureTokenV2(addr string) (bool, string) {
 	resp, err := httpClient.Get(goPlusBase + addr)
 	if err != nil {
 		return false, fmt.Sprintf("GoPlus 请求失败: %v", err)
@@ -793,22 +813,146 @@ func isQualityGoPlus(addr string) (bool, string) {
 		}
 	}
 
+	// 1. 核心安全项 (硬性指标，不过直接淘汰)
 	if toInt(r["is_honeypot"]) == 1 {
-		return false, "蜜罐合约"
+		return false, "蜜罐合约 (Honeypot)"
 	}
 	if toInt(r["is_open_source"]) != 1 {
 		return false, "合约未开源"
 	}
+
+	// 2. 权限风险 (可配置阈值)
+	maxBuyTax := parseEnvFloat("V2_MAX_BUY_TAX", 0.1)   // 最大买税 10%
+	maxSellTax := parseEnvFloat("V2_MAX_SELL_TAX", 0.1) // 最大卖税 10%
+
+	if buyTax := toFloat(r["buy_tax"]); buyTax > maxBuyTax {
+		return false, fmt.Sprintf("买税过高: %.0f%% (阈值: %.0f%%)", buyTax*100, maxBuyTax*100)
+	}
+	if sellTax := toFloat(r["sell_tax"]); sellTax > maxSellTax {
+		return false, fmt.Sprintf("卖税过高: %.0f%% (阈值: %.0f%%)", sellTax*100, maxSellTax*100)
+	}
 	if toInt(r["owner_change_balance"]) == 1 {
-		return false, "owner 可修改余额"
+		return false, "Owner 可修改余额"
 	}
-	if buyTax := toFloat(r["buy_tax"]); buyTax > 0.1 {
-		return false, fmt.Sprintf("买税过高: %.0f%%", buyTax*100)
+	if toInt(r["trading_cooldown"]) == 1 {
+		return false, "存在交易冷却机制"
 	}
-	if sellTax := toFloat(r["sell_tax"]); sellTax > 0.1 {
-		return false, fmt.Sprintf("卖税过高: %.0f%%", sellTax*100)
+	if toInt(r["selfdestruct"]) == 1 {
+		return false, "合约可自毁"
 	}
-	return true, ""
+
+	// 3. 持仓风险
+	// GoPlus 提供的持仓数据可能不实时，后续我们会用自己的 RPC 查询替代
+	maxHolderPercent := parseEnvFloat("V2_MAX_HOLDER_PERCENT", 0.3) // 单一地址持仓不超过 30%
+	if holders, ok := r["holders"].([]interface{}); ok && len(holders) > 0 {
+		topHolder := holders[0].(map[string]interface{})
+		if toFloat(topHolder["percent"]) > maxHolderPercent {
+			return false, fmt.Sprintf("巨鲸持仓过高: %.1f%%", toFloat(topHolder["percent"])*100)
+		}
+	}
+
+	return true, "安全审计通过"
+}
+
+// isHolderDistributionSafe 通过 RPC 实时分析持仓集中度
+func isHolderDistributionSafe(tokenAddr string, createdBlock uint64) (bool, string) {
+	latest, err := rpcHTTP.BlockNumber(context.Background())
+	if err != nil {
+		return false, "无法获取最新区块"
+	}
+
+	query := ethereum.FilterQuery{
+		FromBlock: new(big.Int).SetUint64(createdBlock),
+		ToBlock:   new(big.Int).SetUint64(latest),
+		Addresses: []common.Address{common.HexToAddress(tokenAddr)},
+		Topics:    [][]common.Hash{{topicTransfer}},
+	}
+	logs, err := rpcCallWithRetry(context.Background(), func(ctx context.Context) ([]gethtypes.Log, error) {
+		return rpcHTTP.FilterLogs(ctx, query)
+	})
+	if err != nil {
+		return false, "FilterLogs 失败"
+	}
+
+	balances := make(map[string]*big.Int)
+	totalSupply := big.NewInt(0)
+
+	for _, lg := range logs {
+		if len(lg.Topics) < 3 {
+			continue
+		}
+		from := common.BytesToAddress(lg.Topics[1].Bytes())
+		to := common.BytesToAddress(lg.Topics[2].Bytes())
+		amount := new(big.Int).SetBytes(lg.Data)
+
+		if from.Hex() == zeroAddress {
+			totalSupply.Add(totalSupply, amount)
+		}
+
+		if _, ok := balances[from.Hex()]; !ok {
+			balances[from.Hex()] = big.NewInt(0)
+		}
+		balances[from.Hex()].Sub(balances[from.Hex()], amount)
+
+		if _, ok := balances[to.Hex()]; !ok {
+			balances[to.Hex()] = big.NewInt(0)
+		}
+		balances[to.Hex()].Add(balances[to.Hex()], amount)
+	}
+
+	if totalSupply.Sign() == 0 {
+		return false, "总供应量为 0"
+	}
+
+	type holder struct {
+		addr    string
+		balance *big.Int
+	}
+	var sortedHolders []holder
+	for addr, bal := range balances {
+		if bal.Sign() > 0 && addr != zeroAddress {
+			sortedHolders = append(sortedHolders, holder{addr, bal})
+		}
+	}
+
+	sort.Slice(sortedHolders, func(i, j int) bool {
+		return sortedHolders[i].balance.Cmp(sortedHolders[j].balance) > 0
+	})
+
+	maxTop10Percent := parseEnvFloat("V2_MAX_TOP10_HOLDERS_PERCENT", 0.6)
+	top10Total := big.NewInt(0)
+
+	topN := 10
+	if len(sortedHolders) < topN {
+		topN = len(sortedHolders)
+	}
+
+	for i := 0; i < topN; i++ {
+		top10Total.Add(top10Total, sortedHolders[i].balance)
+	}
+
+	top10PercentF, _ := new(big.Float).Quo(new(big.Float).SetInt(top10Total), new(big.Float).SetInt(totalSupply)).Float64()
+
+	if top10PercentF > maxTop10Percent {
+		return false, fmt.Sprintf("前10持仓占比过高: %.1f%%", top10PercentF*100)
+	}
+
+	return true, fmt.Sprintf("前10持仓占比: %.1f%%", top10PercentF*100)
+}
+
+// hasSmartMoneyBought 在 countSmartBuys 基础上增加分数过滤
+func hasSmartMoneyBought(wallets map[string]string) (bool, int) {
+	minScore := parseEnvFloat("V2_MIN_SMART_MONEY_SCORE", 80.0)
+	var highQualityHits int
+	for addr := range wallets {
+		var wallet database.SmartWallet
+		err := database.DB.Where("address = ? AND score >= ?", addr, minScore).First(&wallet).Error
+		if err == nil {
+			highQualityHits++
+		}
+	}
+	minCount := int(parseEnvFloat("V2_MIN_SMART_MONEY", 1.0))
+	return highQualityHits >= minCount, highQualityHits
 }
 
 // ================== RPC 辅助 ==================

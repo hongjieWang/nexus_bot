@@ -3,14 +3,34 @@ package main
 import (
 	"bot/config"
 	"bot/database"
-	"log/slog"
-	"strconv"
-	"time"
-
+	"context"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"log/slog"
+	"math/big"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
+var alphaRPCClient *ethclient.Client
+
+// 已知 CEX 热钱包（2026最新精选，可每周更新）
+var knownCEXHotWallets = map[string]string{
+	"0x28c6c06298d514db089934071355e5743bf21d60": "BINANCE",
+	"0x3f5CE5FBFe3E9af3971dD833D26bA9b5C9aE9A9":  "BINANCE",
+	"0xc9f5296eb3ac266c94568d790b6e91eba7d76a11": "CEXIO",
+	"0xad6ec9801f04f45e7f6d907ec6b72246b66ff4f3": "CEXIO",
+	// ...（继续补充 50+ 个，来源：bscscan labeled + slowmist）
+}
+
+// 线程安全缓存（开发用，生产换 Redis）
+var fundingCache sync.Map // wallet → "BINANCE"
 var (
 	alphaClustersTotal = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "alpha_clusters_total",
@@ -22,22 +42,79 @@ var (
 	})
 )
 
-// traceFundingSource 资金溯源模拟函数 (连接 CEX 提币热钱包 / 混币器)
+// traceFundingSource 使用 RPC 溯源两个钱包的资金来源是否为同一个 CEX
 func traceFundingSource(w1, w2 string) bool {
-	// 在生产环境中，此处应通过 RPC 查询或索引器获取钱包的第一笔入账交易 (Inflow)
-	// 如果两个钱包的第一笔大额资金均来自同一个 CEX 提币地址或同一个中转钱包，则判定为同源。
+	if alphaRPCClient == nil {
+		return false
+	}
 	
-	// 这里模拟一个简单的逻辑：如果是已知的关联钱包对，返回 true
-	// 实际开发中可对接本地的 funding_sources 缓存表
-	return false 
+	src1 := getWalletFundingSource(w1)
+	if src1 == "" {
+		return false
+	}
+	
+	src2 := getWalletFundingSource(w2)
+	if src2 == "" {
+		return false
+	}
+	
+	return src1 == src2
+}
+
+// getWalletFundingSource 是 traceFundingSource 的辅助函数，带缓存
+func getWalletFundingSource(wallet string) string {
+	if src, ok := fundingCache.Load(wallet); ok {
+		return src.(string)
+	}
+
+	if cex, ok := knownCEXHotWallets[wallet]; ok {
+		fundingCache.Store(wallet, cex)
+		return cex
+	}
+
+	// RPC 溯源逻辑
+	latest, err := alphaRPCClient.BlockNumber(context.Background())
+	if err != nil {
+		slog.Error("获取最新区块号失败 for funding source", "err", err)
+		return ""
+	}
+	
+	fromBlock := new(big.Int).Sub(big.NewInt(int64(latest)), big.NewInt(30*24*60*60/3)) // ≈30天
+
+	// 查询入账历史
+	query := ethereum.FilterQuery{
+		Topics:    [][]common.Hash{{crypto.Keccak256Hash([]byte("Transfer(address,address,uint256)"))}, nil, {common.HexToHash(wallet)}},
+		FromBlock: fromBlock,
+		ToBlock:   new(big.Int).SetUint64(latest),
+	}
+	
+	logs, err := alphaRPCClient.FilterLogs(context.Background(), query)
+	if err != nil {
+		slog.Error("FilterLogs 失败 for funding source", "err", err)
+		return ""
+	}
+
+	for _, log := range logs {
+		if len(log.Topics) == 3 {
+			fromAddr := common.BytesToAddress(log.Topics[1].Bytes()).Hex()
+			if cex, ok := knownCEXHotWallets[fromAddr]; ok {
+				fundingCache.Store(wallet, cex)
+				return cex
+			}
+		}
+	}
+
+	fundingCache.Store(wallet, "") // 存空，避免重复查询
+	return ""
 }
 
 // startAlphaEngine 启动 Phase 3: 聪明钱 Alpha 挖掘与防女巫/MEV 引擎
-func startAlphaEngine() {
+func startAlphaEngine(rpcClient *ethclient.Client) {
 	if database.DB == nil {
 		slog.Warn("数据库未配置，Alpha Engine (Phase 3) 无法启动")
 		return
 	}
+	alphaRPCClient = rpcClient // 保存 RPC 客户端实例
 
 	slog.Info("🔮 Alpha Engine 启动，开启智能打分与实体聚类扫描...")
 
@@ -102,16 +179,16 @@ func evaluateSmartWallets() {
 				baseScore = v
 			}
 
-			newScore := baseScore 
+			newScore := baseScore
 			// 交易频率权重：过低没参考价值，适中最好，过高疑似机器人
 			if w.TotalTrades > 3 && w.TotalTrades <= 30 {
 				newScore += float64(w.TotalTrades) * 1.5
 			} else if w.TotalTrades > 30 {
-				newScore -= 5.0 
+				newScore -= 5.0
 			}
 
 			// 胜率与 ROI 权重 (假设已通过回测引擎更新)
-			newScore += w.WinRate * 40.0 // 胜率贡献最高 40 分
+			newScore += w.WinRate * 40.0       // 胜率贡献最高 40 分
 			newScore += (w.ROI / 100.0) * 10.0 // ROI 贡献
 
 			// 平滑处理得分，设置上下限
@@ -187,9 +264,9 @@ func detectClusters() {
 			for j := i + 1; j < n; j++ {
 				diff := tokenInteracts[j].Timestamp.Sub(tokenInteracts[i].Timestamp)
 				if diff > timeWin {
-					break 
+					break
 				}
-				
+
 				w1, w2 := tokenInteracts[i].Wallet, tokenInteracts[j].Wallet
 				if w1 == w2 {
 					continue
@@ -200,7 +277,7 @@ func detectClusters() {
 				if coOccurrence[w1] == nil {
 					coOccurrence[w1] = make(map[string]float64)
 				}
-				
+
 				// --- 多维权重计算 ---
 				// 1. 基础同车分 (按时间差衰减)
 				// 越是同时买入，分数越高。1秒内买入给 5分，15分钟边缘给 1分
@@ -208,7 +285,7 @@ func detectClusters() {
 				if timeWeight < 1.0 {
 					timeWeight = 1.0
 				}
-				
+
 				// 2. 金额相似度权重
 				// 如果两个钱包买入金额非常接近 (例如相差 < 10%)，极大增加关联概率
 				amt1, amt2 := tokenInteracts[i].AmountUSD, tokenInteracts[j].AmountUSD
@@ -222,13 +299,13 @@ func detectClusters() {
 						amountWeight = 5.0
 					}
 				}
-				
+
 				// 3. 资金溯源权重 (CEX/Mixer)
 				fundingWeight := 0.0
 				if traceFundingSource(w1, w2) {
-					fundingWeight = 20.0 
+					fundingWeight = 20.0
 				}
-				
+
 				coOccurrence[w1][w2] += (timeWeight + amountWeight + fundingWeight)
 			}
 		}
@@ -253,7 +330,7 @@ func detectClusters() {
 		rootI := find(i)
 		rootJ := find(j)
 		if rootI != rootJ {
-			parent[rootI] = rootJ 
+			parent[rootI] = rootJ
 		}
 	}
 
@@ -281,7 +358,7 @@ func detectClusters() {
 		if len(members) > 1 {
 			cID := "CLUSTER-" + time.Now().Format("060102") + "-" + strconv.Itoa(clusterIndex)
 			clusterIndex++
-			
+
 			for _, w := range members {
 				database.DB.Model(&database.SmartWallet{}).
 					Where("address = ?", w).
