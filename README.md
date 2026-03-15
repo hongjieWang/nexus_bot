@@ -75,20 +75,39 @@ Score = 100 × [<br>
     <div class="f-name">f_consistency — Frequency Consistency</div>
     <div class="f-desc">Penalizes noise (too few trades) and MEV bots (too many trades).<br>f(n) = 1 − |log(n/15)| / 4. Target range is 8-30 trades for a full score.</div>
     <div class="weight-bar-wrap"><div class="weight-bar" style="width:20%;background:#D85A30"></div></div>
-  </div>
-</div>
+  ### 🧠 Alpha Scoring Model
 
-<div class="factor-row">
-  <div class="f-tag tag-e">W=0.05</div>
-  <div>
-    <div class="f-name">f_early — Early Entry Reward</div>
-    <div class="f-desc">Avg blocks from pool creation to entry. (BSC ≈ 3s/block).<br>f(blocks) = e^(−blocks/100). Entry within 50 blocks (2.5 mins) scores 0.61+.</div>
-    <div class="weight-bar-wrap"><div class="weight-bar" style="width:10%;background:#378ADD"></div></div>
-  </div>
-</div>
+  The Alpha Engine uses a multi-dimensional weighted scoring model to evaluate wallet quality.
 
-> **Note**: To ensure accurate scoring, the Alpha Engine uses a background worker (`trackSmartWalletSells`) to scan for exit prices by resolving subsequent `Transfer` events from smart wallets back to liquidity pools or routers.
+  #### **Final Score Formula**
 
+  $$
+  Score = 100 \times \sum (W_i \times f_i(x))
+  $$
+
+  $$
+  Score = 100 \times \begin{bmatrix} 
+  0.35 \cdot f_{winrate}(WinRate) \\
+  + 0.30 \cdot f_{roi}(ROI) \\
+  + 0.20 \cdot f_{recency}(LastActive) \\
+  + 0.10 \cdot f_{consistency}(Trades) \\
+  + 0.05 \cdot f_{early}(AvgBlockDelta) 
+  \end{bmatrix}
+  $$
+
+  #### **Weight Distribution & Logic**
+
+  | Factor | Weight | Function | Description |
+  | :--- | :--- | :--- | :--- |
+  | **Win Rate** | `0.35` | `sigmoid(wr, 0.55, 10)` | **Highest Weight**. Calculated by BUY/SELL pairs. A 20%+ price increase is a "win". |
+  | **Avg ROI** | `0.30` | `tanh(roi / 0.5)` | Mean ROI across closed trades. Tanh squashes outliers to prevent "lucky" trades from skewing scores. |
+  | **Recency** | `0.20` | $e^{(-days/14)}$ | Prioritizes active wallets. Activity 7 days ago scores `0.61`; 30 days ago scores `0.11`. |
+  | **Consistency** | `0.10` | $1 - \frac{\|log(n/15)\|}{4}$ | Penalizes noise (too few) and MEV (too many). Target is 8-30 trades for max score. |
+  | **Early Entry** | `0.05` | $e^{(-blocks/100)}$ | Reward for entry speed. Within 50 blocks (~2.5 mins) scores `0.61+`. |
+
+  > **Note**: To ensure accurate scoring, the Alpha Engine uses a background worker (`trackSmartWalletSells`) to scan for exit prices by resolving subsequent `Transfer` events from smart wallets back to liquidity pools or routers.
+
+  *   **📉 CEX Quant Engine**:
 *   **📉 CEX Quant Engine**: Connects to Binance Futures for algorithmic trading (e.g., Grid Market Making, Momentum Breakout, EMA/MACD/RSI strategies) with real-time position tracking and global Take Profit/Stop Loss management.
 *   **🛡️ Rug-Pull Panic Sell**: Real-time WSS listener that monitors LP `Sync` events. If liquidity is suddenly removed (Rug Pull), it overrides slippage limits (up to 50%) to execute an emergency Panic Sell in the same block.
 *   **📊 Cyberpunk React Dashboard**: A sleek, futuristic Web UI for monitoring total trades, win rates, and active tracked tokens.
