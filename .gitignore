@@ -1,0 +1,32 @@
+# Binaries and build artifacts
+bot
+bot_linux_amd64
+*.tar.gz
+*.exe
+*.out
+*.app
+
+# Environment variables and local configs
+.env
+strategies.json
+
+# Go workspace
+*.test
+*.prof
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Frontend Dashboard (React/Vite)
+dashboard/node_modules/
+dashboard/dist/
+dashboard/build/
+dashboard/.env.local
+dashboard/.env.*.local
