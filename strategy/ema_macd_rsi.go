@@ -26,7 +26,8 @@ func (s *EmaMacdRsiStrategy) OnTick(snapshot MarketSnapshot, ctx *StrategyContex
 	highs, ok2 := ctx.Meta["highs"].([]float64)
 	lows, ok3 := ctx.Meta["lows"].([]float64)
 
-	if !ok1 || !ok2 || !ok3 || len(closes) < 55 {
+	// EMA26(26根) + Signal EMA9(9根) + 安全余量 = 60 根，确保 last(signalLine) 不取到热身期零值
+	if !ok1 || !ok2 || !ok3 || len(closes) < 60 {
 		return nil
 	}
 

@@ -108,7 +108,36 @@ func startTradingEngine() {
 		}
 	}
 
-	slog.Info("🏁 启动多策略并行交易测试", "策略数量", len(strats), "实盘", enabled)
+	// 实盘模式：通过 ACTIVE_STRATEGY 环境变量指定唯一运行的策略，防止多策略并行对冲/互撤挂单
+	// 模拟模式下：所有策略并行运行用于比较验证
+	if enabled {
+		activeID := envOrDefault("ACTIVE_STRATEGY", "")
+		if activeID == "" {
+			// 未指定时取第一个策略并警告
+			slog.Warn("⚠️ 实盘模式未设置 ACTIVE_STRATEGY，默认仅运行第一个策略以防对冲风险",
+				"using", strats[0].ID(),
+				"hint", "请在环境变量中设置 ACTIVE_STRATEGY=<策略ID>",
+			)
+			strats = strats[:1]
+		} else {
+			// 按 ID 过滤出指定策略
+			var selected []strategy.BaseStrategy
+			for _, s := range strats {
+				if s.ID() == activeID {
+					selected = append(selected, s)
+					break
+				}
+			}
+			if len(selected) == 0 {
+				slog.Error("❌ ACTIVE_STRATEGY 指定的策略 ID 不存在，拒绝启动实盘", "id", activeID)
+				return
+			}
+			strats = selected
+			slog.Info("🎯 实盘策略已锁定", "strategy", activeID)
+		}
+	}
+
+	slog.Info("🏁 启动策略引擎", "策略数量", len(strats), "实盘", enabled)
 
 	var wg sync.WaitGroup
 	for _, s := range strats {
@@ -493,20 +522,21 @@ func (e *TradingEngine) syncPosition() {
 	}
 
 	netQty := 0.0
-	avgEntry := 0.0
+	totalNotional := 0.0 // 加权计算均价：∑(qty × entryPrice)
 
 	for _, p := range positions {
 		qty, _ := strconv.ParseFloat(p.PositionAmt, 64)
 		if math.Abs(qty) > 0.001 {
 			entry, _ := strconv.ParseFloat(p.EntryPrice, 64)
 			netQty += qty
-			avgEntry = entry // 简化：假设只使用 One-Way 模式，只有一条持仓记录有效
+			totalNotional += math.Abs(qty) * entry
 		}
 	}
 
 	if math.Abs(netQty) > 0.001 {
 		e.positionQty = netQty
-		e.entryPrice = avgEntry
+		// 加权均价：总名义价值 / 总持仓量（绝对值）
+		e.entryPrice = totalNotional / math.Abs(netQty)
 	} else {
 		e.positionQty = 0
 		e.entryPrice = 0

@@ -741,7 +741,10 @@ func countSmartBuys(tokenAddr, poolAddr string, createdBlock uint64) (map[string
 		label, ok := smartWallets[toAddr]
 		smartWalletsMu.RUnlock()
 
-		if ok {
+		// 命中条件：toAddr 是聪明钱 且 fromAddr 必须是 router 或 pool
+		// 排除空投、团队解锁等非买入转账（from=任意地址）
+		isBuySource := isRouter || (fromAddr == strings.ToLower(poolAddr))
+		if ok && isBuySource {
 			if _, already := hitWallets[toAddr]; !already {
 				hitWallets[toAddr] = label
 
