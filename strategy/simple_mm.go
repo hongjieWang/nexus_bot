@@ -5,11 +5,14 @@ import "math"
 // SimpleMMStrategy — 对称做市策略，含库存偏斜与最大持仓保护。
 // 当净持仓偏多时，上移报价中心（抬高 ask 减少卖出意愿，下移 bid 减少买入意愿），反之亦然。
 type SimpleMMStrategy struct {
-	strategyID  string
-	spreadBps   float64
-	size        float64
-	maxPosition float64 // 最大净持仓（绝对值），超限后停止单边报价
-	skewFactor  float64 // 库存偏斜力度：每持有 1 单位多仓时中间价向上偏移的 bps
+	strategyID         string
+	spreadBps          float64
+	size               float64
+	maxPosition        float64 // 最大净持仓（绝对值），超限后停止单边报价
+	skewFactor         float64 // 库存偏斜力度：每持有 1 单位多仓时中间价向上偏移的 bps
+	maxATRBps          float64
+	trendATRMultiplier float64
+	unwindBps          float64
 }
 
 func NewSimpleMMStrategy(id string, spreadBps float64, size float64) *SimpleMMStrategy {
@@ -17,11 +20,14 @@ func NewSimpleMMStrategy(id string, spreadBps float64, size float64) *SimpleMMSt
 		id = "simple_mm"
 	}
 	return &SimpleMMStrategy{
-		strategyID:  id,
-		spreadBps:   spreadBps,
-		size:        size,
-		maxPosition: size * 5,        // 默认最大持仓为单次下单量的 5 倍
-		skewFactor:  spreadBps * 0.3, // 偏斜幅度为半价差的 30%
+		strategyID:         id,
+		spreadBps:          spreadBps,
+		size:               size,
+		maxPosition:        size * 5,        // 默认最大持仓为单次下单量的 5 倍
+		skewFactor:         spreadBps * 0.3, // 偏斜幅度为半价差的 30%
+		maxATRBps:          90.0,
+		trendATRMultiplier: 0.65,
+		unwindBps:          math.Max(spreadBps*0.35, 8.0),
 	}
 }
 
@@ -37,6 +43,35 @@ func (s *SimpleMMStrategy) OnTick(snapshot MarketSnapshot, ctx *StrategyContext)
 	posQty := 0.0
 	if ctx != nil {
 		posQty = ctx.PositionQty
+	}
+
+	regime := detectMarketRegime(snapshot, ctx, s.maxATRBps, s.trendATRMultiplier)
+	if regime.ShouldStandDown {
+		if posQty == 0 {
+			return nil
+		}
+
+		closeSide := "sell"
+		closePrice := snapshot.MidPrice * (1.0 - s.unwindBps/10000.0)
+		if posQty < 0 {
+			closeSide = "buy"
+			closePrice = snapshot.MidPrice * (1.0 + s.unwindBps/10000.0)
+		}
+
+		return []StrategyDecision{{
+			Action:     "place_order",
+			Instrument: snapshot.Instrument,
+			Side:       closeSide,
+			Size:       math.Abs(posQty),
+			LimitPrice: math.Round(closePrice*100) / 100,
+			OrderType:  "Gtc",
+			Meta: map[string]interface{}{
+				"signal":    "mm_reduce_only",
+				"atr_bps":   regime.ATRBps,
+				"regime":    regime.Direction,
+				"standdown": true,
+			},
+		}}
 	}
 
 	// 库存偏斜：净多仓时中间价上移（降低继续买入的吸引力），净空仓时下移

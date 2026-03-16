@@ -49,6 +49,7 @@ type ActiveOrder struct {
 	Price     float64
 	Qty       float64
 	StopPrice float64
+	Reason    string
 }
 
 type RiskState struct {
@@ -65,6 +66,8 @@ type TradingEngine struct {
 	apiSecret string
 	enabled   bool
 
+	runID            string
+	accountID        string
 	tradeUSDT        float64
 	leverage         int
 	interval         string
@@ -72,12 +75,13 @@ type TradingEngine struct {
 	simulatedBalance float64
 
 	// ==== OMS (订单与持仓追踪) ====
-	positionQty  float64 // >0=LONG, <0=SHORT
-	entryPrice   float64
-	activeOrders map[int64]*ActiveOrder
-	orderSeq     int64
-	globalSL     float64
-	globalTP     float64
+	positionQty      float64 // >0=LONG, <0=SHORT
+	entryPrice       float64
+	positionOpenedAt time.Time
+	activeOrders     map[int64]*ActiveOrder
+	orderSeq         int64
+	globalSL         float64
+	globalTP         float64
 	// ===========================
 
 	risk   RiskState
@@ -141,10 +145,16 @@ func startTradingEngine() {
 
 	var wg sync.WaitGroup
 	for _, s := range strats {
+		accountID := "binance_futures"
+		if !enabled {
+			accountID = "simulated:" + s.ID()
+		}
 		engine := &TradingEngine{
 			apiKey:           apiKey,
 			apiSecret:        apiSecret,
 			enabled:          enabled,
+			runID:            fmt.Sprintf("%s-%s", s.ID(), time.Now().UTC().Format("20060102T150405.000000000Z")),
+			accountID:        accountID,
 			tradeUSDT:        parseEnvFloat("TRADE_USDT", defaultUSDT),
 			leverage:         parseEnvInt("TRADE_LEVERAGE", defaultLev),
 			interval:         envOrDefault("TRADE_INTERVAL", defaultInterval),
@@ -260,56 +270,187 @@ func (e *TradingEngine) simulateFills(high, low float64) {
 		}
 
 		if filled {
-			e.applyFill(o.Side, o.Qty, fillPrice)
+			e.applyFill(o.Side, o.Qty, fillPrice, o.Reason)
 			delete(e.activeOrders, id)
 			slog.Info("🤝 [模拟] 挂单成交", "strategy", e.strat.ID(), "type", o.Type, "side", o.Side, "price", fillPrice, "qty", o.Qty)
 		}
 	}
 }
 
-func (e *TradingEngine) applyFill(side string, qty, execPrice float64) {
-	if side == "SELL" {
-		qty = -qty
+func (e *TradingEngine) applyFill(side string, qty, execPrice float64, reason string) {
+	fillTime := time.Now()
+	orderSide := strings.ToUpper(side)
+	signedQty := qty
+	if orderSide == "SELL" {
+		signedQty = -qty
 	}
-	oldQty := e.positionQty
-	newQty := oldQty + qty
 
-	// 如果有平仓逻辑，计算 PnL
-	var pnl float64
-	if (oldQty > 0 && qty < 0) || (oldQty < 0 && qty > 0) {
-		closeQty := math.Min(math.Abs(oldQty), math.Abs(qty))
-		if oldQty > 0 { // Was LONG, now closing
+	oldQty := e.positionQty
+	newQty := oldQty + signedQty
+	if reason == "" {
+		reason = "fill"
+	}
+
+	if (oldQty > 0 && signedQty < 0) || (oldQty < 0 && signedQty > 0) {
+		closeQty := math.Min(math.Abs(oldQty), math.Abs(signedQty))
+		positionSide := positionSideFromQty(oldQty)
+		openedAt := e.positionOpenedAt
+		if openedAt.IsZero() {
+			openedAt = fillTime
+		}
+
+		var pnl float64
+		if oldQty > 0 {
 			pnl = (execPrice - e.entryPrice) * closeQty
-		} else { // Was SHORT, now closing
+		} else {
 			pnl = (e.entryPrice - execPrice) * closeQty
 		}
 
 		e.simulatedBalance += pnl
-		database.LogTradeToDB(tradingSymbol, e.strat.ID(), side, closeQty, e.entryPrice, execPrice, pnl, e.simulatedBalance, time.Now(), time.Now(), true)
+		database.LogTradeExecution(database.TradeExecution{
+			RunID:             e.runID,
+			AccountID:         e.accountID,
+			Symbol:            tradingSymbol,
+			StrategyID:        e.strat.ID(),
+			OrderSide:         orderSide,
+			PositionSide:      positionSide,
+			Action:            closeExecutionAction(oldQty, newQty),
+			Qty:               closeQty,
+			Price:             execPrice,
+			PositionQtyBefore: oldQty,
+			PositionQtyAfter:  newQty,
+			Reason:            reason,
+			IsSimulated:       !e.enabled,
+			ExecutedAt:        fillTime,
+		})
+		database.LogTradeSummary(database.TradeHistory{
+			RunID:        e.runID,
+			AccountID:    e.accountID,
+			Symbol:       tradingSymbol,
+			StrategyID:   e.strat.ID(),
+			Side:         orderSide,
+			OpenSide:     orderSideForPosition(positionSide),
+			CloseSide:    orderSide,
+			PositionSide: positionSide,
+			Qty:          closeQty,
+			EntryPrice:   e.entryPrice,
+			ExitPrice:    execPrice,
+			PnL:          pnl,
+			Balance:      e.simulatedBalance,
+			CloseReason:  reason,
+			IsSimulated:  !e.enabled,
+			OpenedAt:     openedAt,
+			ClosedAt:     fillTime,
+		})
 		e.recordResult(pnl)
-		sendTradingAlert("close_fill", e.positionQty, e.entryPrice, closeQty, execPrice, pnl)
+		sendTradingAlert("close_fill", oldQty, e.entryPrice, closeQty, execPrice, pnl)
 	}
 
-	// 重新计算持仓均价
 	if math.Abs(newQty) > 0.0001 {
-		isAdding := (oldQty > 0 && qty > 0) || (oldQty < 0 && qty < 0)
+		isAdding := (oldQty > 0 && signedQty > 0) || (oldQty < 0 && signedQty < 0)
 		if oldQty == 0 {
-			// 新开仓
 			e.entryPrice = execPrice
+			e.positionOpenedAt = fillTime
+			database.LogTradeExecution(database.TradeExecution{
+				RunID:             e.runID,
+				AccountID:         e.accountID,
+				Symbol:            tradingSymbol,
+				StrategyID:        e.strat.ID(),
+				OrderSide:         orderSide,
+				PositionSide:      positionSideFromQty(newQty),
+				Action:            "OPEN",
+				Qty:               math.Abs(newQty),
+				Price:             execPrice,
+				PositionQtyBefore: oldQty,
+				PositionQtyAfter:  newQty,
+				Reason:            reason,
+				IsSimulated:       !e.enabled,
+				ExecutedAt:        fillTime,
+			})
 			sendTradingAlert("open", newQty, e.entryPrice, 0, 0, 0)
 		} else if isAdding {
-			// 加仓：更新加权均价
-			e.entryPrice = (e.entryPrice*math.Abs(oldQty) + execPrice*math.Abs(qty)) / math.Abs(newQty)
+			e.entryPrice = (e.entryPrice*math.Abs(oldQty) + execPrice*math.Abs(signedQty)) / math.Abs(newQty)
+			database.LogTradeExecution(database.TradeExecution{
+				RunID:             e.runID,
+				AccountID:         e.accountID,
+				Symbol:            tradingSymbol,
+				StrategyID:        e.strat.ID(),
+				OrderSide:         orderSide,
+				PositionSide:      positionSideFromQty(newQty),
+				Action:            "ADD",
+				Qty:               math.Abs(signedQty),
+				Price:             execPrice,
+				PositionQtyBefore: oldQty,
+				PositionQtyAfter:  newQty,
+				Reason:            reason,
+				IsSimulated:       !e.enabled,
+				ExecutedAt:        fillTime,
+			})
 		} else if (newQty > 0) != (oldQty > 0) {
-			// 仓位反转
 			e.entryPrice = execPrice
+			e.positionOpenedAt = fillTime
+			database.LogTradeExecution(database.TradeExecution{
+				RunID:             e.runID,
+				AccountID:         e.accountID,
+				Symbol:            tradingSymbol,
+				StrategyID:        e.strat.ID(),
+				OrderSide:         orderSide,
+				PositionSide:      positionSideFromQty(newQty),
+				Action:            "REVERSE_OPEN",
+				Qty:               math.Abs(newQty),
+				Price:             execPrice,
+				PositionQtyBefore: oldQty,
+				PositionQtyAfter:  newQty,
+				Reason:            reason,
+				IsSimulated:       !e.enabled,
+				ExecutedAt:        fillTime,
+			})
 		}
-		// 部分平仓：entryPrice 保持不变
 	} else {
 		e.entryPrice = 0
+		e.positionOpenedAt = time.Time{}
 		newQty = 0
 	}
 	e.positionQty = newQty
+}
+
+func positionSideFromQty(qty float64) string {
+	if qty > 0 {
+		return "LONG"
+	}
+	if qty < 0 {
+		return "SHORT"
+	}
+	return ""
+}
+
+func orderSideForPosition(positionSide string) string {
+	if positionSide == "LONG" {
+		return "BUY"
+	}
+	if positionSide == "SHORT" {
+		return "SELL"
+	}
+	return ""
+}
+
+func closeExecutionAction(oldQty, newQty float64) string {
+	if math.Abs(newQty) <= 0.0001 {
+		return "CLOSE"
+	}
+	if (newQty > 0) != (oldQty > 0) {
+		return "REVERSE_CLOSE"
+	}
+	return "REDUCE"
+}
+
+func decisionReason(d strategy.StrategyDecision) string {
+	if d.Meta != nil {
+		if signal, ok := d.Meta["signal"].(string); ok && signal != "" {
+			return signal
+		}
+	}
+	return strings.ToLower(d.OrderType)
 }
 
 func (e *TradingEngine) executeDecisions(decisions []strategy.StrategyDecision, currentPrice float64) {
@@ -349,12 +490,13 @@ func (e *TradingEngine) executeDecisions(decisions []strategy.StrategyDecision, 
 		}
 
 		side := strings.ToUpper(d.Side)
+		fillReason := decisionReason(d)
 		if d.OrderType == "Market" {
 			// 市价单立刻执行
 			if e.enabled {
 				e.placeOrder(side, "MARKET", qty, 0, 0)
 			} else {
-				e.applyFill(side, qty, currentPrice)
+				e.applyFill(side, qty, currentPrice, fillReason)
 			}
 
 			// 处理策略附带的止盈止损
@@ -391,7 +533,7 @@ func (e *TradingEngine) executeDecisions(decisions []strategy.StrategyDecision, 
 			} else {
 				e.orderSeq++
 				e.activeOrders[e.orderSeq] = &ActiveOrder{
-					ID: e.orderSeq, Side: side, Type: "LIMIT", Price: d.LimitPrice, Qty: qty,
+					ID: e.orderSeq, Side: side, Type: "LIMIT", Price: d.LimitPrice, Qty: qty, Reason: fillReason,
 				}
 			}
 		}
@@ -431,7 +573,13 @@ func (e *TradingEngine) checkGlobalExitConditions(price, atr float64) {
 	} else {
 		// 关键修复：模拟模式下平仓后也需清除所有本地活跃挂单 (Severe #5)
 		e.activeOrders = make(map[int64]*ActiveOrder)
-		e.applyFill(closeSide, qty, price)
+		fillReason := "global_exit"
+		if reason == "止损" {
+			fillReason = "global_stop_loss"
+		} else if reason == "止盈" {
+			fillReason = "global_take_profit"
+		}
+		e.applyFill(closeSide, qty, price, fillReason)
 	}
 	e.globalSL, e.globalTP = 0, 0
 }

@@ -31,18 +31,43 @@ type Token struct {
 
 // TradeHistory 模型：记录所有的 CEX/DEX 开平仓记录
 type TradeHistory struct {
-	ID          uint      `gorm:"primaryKey"`
-	Symbol      string    `gorm:"type:varchar(20);index"`
-	StrategyID  string    `gorm:"type:varchar(50);index"`
-	Side        string    `gorm:"type:varchar(10)"` // "BUY" / "SELL" 或 "LONG" / "SHORT"
-	Qty         float64   `gorm:"type:double"`
-	EntryPrice  float64   `gorm:"type:double"`
-	ExitPrice   float64   `gorm:"type:double"`
-	PnL         float64   `gorm:"type:double"`
-	Balance     float64   `gorm:"type:double"`
-	IsSimulated bool      `gorm:"type:boolean"`
-	OpenedAt    time.Time `gorm:"index"`
-	ClosedAt    time.Time
+	ID           uint      `gorm:"primaryKey"`
+	RunID        string    `gorm:"type:varchar(64);index"`
+	AccountID    string    `gorm:"type:varchar(64);index"`
+	Symbol       string    `gorm:"type:varchar(20);index"`
+	StrategyID   string    `gorm:"type:varchar(50);index"`
+	Side         string    `gorm:"type:varchar(10)"` // 兼容旧字段，保留平仓订单方向
+	OpenSide     string    `gorm:"type:varchar(10)"`
+	CloseSide    string    `gorm:"type:varchar(10)"`
+	PositionSide string    `gorm:"type:varchar(10);index"` // "LONG" / "SHORT"
+	Qty          float64   `gorm:"type:double"`
+	EntryPrice   float64   `gorm:"type:double"`
+	ExitPrice    float64   `gorm:"type:double"`
+	PnL          float64   `gorm:"type:double"`
+	Balance      float64   `gorm:"type:double"`
+	CloseReason  string    `gorm:"type:varchar(64)"`
+	IsSimulated  bool      `gorm:"type:boolean"`
+	OpenedAt     time.Time `gorm:"index"`
+	ClosedAt     time.Time
+}
+
+// TradeExecution 模型：记录每次执行的开仓/加仓/减仓/平仓事件。
+type TradeExecution struct {
+	ID                uint      `gorm:"primaryKey"`
+	RunID             string    `gorm:"type:varchar(64);index"`
+	AccountID         string    `gorm:"type:varchar(64);index"`
+	Symbol            string    `gorm:"type:varchar(20);index"`
+	StrategyID        string    `gorm:"type:varchar(50);index"`
+	OrderSide         string    `gorm:"type:varchar(10)"`
+	PositionSide      string    `gorm:"type:varchar(10);index"` // 执行后或被关闭仓位的方向
+	Action            string    `gorm:"type:varchar(16);index"` // OPEN / ADD / REDUCE / CLOSE / REVERSE_CLOSE / REVERSE_OPEN
+	Qty               float64   `gorm:"type:double"`
+	Price             float64   `gorm:"type:double"`
+	PositionQtyBefore float64   `gorm:"type:double"`
+	PositionQtyAfter  float64   `gorm:"type:double"`
+	Reason            string    `gorm:"type:varchar(64)"`
+	IsSimulated       bool      `gorm:"type:boolean"`
+	ExecutedAt        time.Time `gorm:"index"`
 }
 
 // SmartWallet 模型：聪明钱数据库，支持历史战绩与防女巫 (Phase 3)
@@ -110,7 +135,7 @@ func InitDB() {
 	}
 
 	// 自动迁移模式，确保表结构与结构体一致
-	err = DB.AutoMigrate(&Token{}, &TradeHistory{}, &SmartWallet{}, &SmartEntity{}, &SmartWalletTrade{}, &SystemConfig{})
+	err = DB.AutoMigrate(&Token{}, &TradeHistory{}, &TradeExecution{}, &SmartWallet{}, &SmartEntity{}, &SmartWalletTrade{}, &SystemConfig{})
 	if err != nil {
 		slog.Error("MySQL 表结构迁移失败", "err", err)
 		return
@@ -202,28 +227,25 @@ func GetFilteredSmartWallets() map[string]string {
 	return filtered
 }
 
-// logTradeToDB 记录交易到 MySQL (兼容之前 trading.go 的调用)
-func LogTradeToDB(symbol, strategyID, side string, qty, entryPrice, exitPrice, pnl, balance float64, openedAt, closedAt time.Time, isSimulated bool) {
+// LogTradeSummary 记录一笔已完成的持仓回合。
+func LogTradeSummary(trade TradeHistory) {
 	if DB == nil {
 		return
 	}
 
-	trade := TradeHistory{
-		Symbol:      symbol,
-		StrategyID:  strategyID,
-		Side:        side,
-		Qty:         qty,
-		EntryPrice:  entryPrice,
-		ExitPrice:   exitPrice,
-		PnL:         pnl,
-		Balance:     balance,
-		IsSimulated: isSimulated,
-		OpenedAt:    openedAt,
-		ClosedAt:    closedAt,
-	}
-
 	if err := DB.Create(&trade).Error; err != nil {
 		slog.Error("记录交易到 MySQL 失败", "err", err)
+	}
+}
+
+// LogTradeExecution 记录逐笔执行事件，用于还原开平仓过程。
+func LogTradeExecution(exec TradeExecution) {
+	if DB == nil {
+		return
+	}
+
+	if err := DB.Create(&exec).Error; err != nil {
+		slog.Error("记录交易执行到 MySQL 失败", "err", err)
 	}
 }
 

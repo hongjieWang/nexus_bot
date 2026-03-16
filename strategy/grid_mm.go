@@ -4,11 +4,14 @@ import "math"
 
 // GridMMStrategy — Grid market maker: fixed-interval grid levels above and below mid.
 type GridMMStrategy struct {
-	strategyID     string
-	gridSpacingBps float64
-	numLevels      int
-	sizePerLevel   float64
-	maxPosition    float64
+	strategyID         string
+	gridSpacingBps     float64
+	numLevels          int
+	sizePerLevel       float64
+	maxPosition        float64
+	maxATRBps          float64
+	trendATRMultiplier float64
+	unwindBps          float64
 }
 
 func NewGridMMStrategy(id string, gridSpacingBps float64, numLevels int, sizePerLevel, maxPosition float64) *GridMMStrategy {
@@ -16,11 +19,14 @@ func NewGridMMStrategy(id string, gridSpacingBps float64, numLevels int, sizePer
 		id = "grid_mm"
 	}
 	return &GridMMStrategy{
-		strategyID:     id,
-		gridSpacingBps: gridSpacingBps,
-		numLevels:      numLevels,
-		sizePerLevel:   sizePerLevel,
-		maxPosition:    maxPosition,
+		strategyID:         id,
+		gridSpacingBps:     gridSpacingBps,
+		numLevels:          numLevels,
+		sizePerLevel:       sizePerLevel,
+		maxPosition:        maxPosition,
+		maxATRBps:          95.0,
+		trendATRMultiplier: 0.60,
+		unwindBps:          math.Max(gridSpacingBps*0.75, 10.0),
 	}
 }
 
@@ -39,6 +45,36 @@ func (s *GridMMStrategy) OnTick(snapshot MarketSnapshot, ctx *StrategyContext) [
 	}
 
 	var orders []StrategyDecision
+
+	regime := detectMarketRegime(snapshot, ctx, s.maxATRBps, s.trendATRMultiplier)
+	if regime.ShouldStandDown {
+		if ctx.PositionQty == 0 {
+			return nil
+		}
+
+		closeSide := "buy"
+		closePrice := snapshot.MidPrice * (1.0 + s.unwindBps/10000.0)
+		if ctx.PositionQty > 0 {
+			closeSide = "sell"
+			closePrice = snapshot.MidPrice * (1.0 - s.unwindBps/10000.0)
+		}
+
+		orders = append(orders, StrategyDecision{
+			Action:     "place_order",
+			Instrument: snapshot.Instrument,
+			Side:       closeSide,
+			Size:       math.Abs(ctx.PositionQty),
+			LimitPrice: math.Round(closePrice*100) / 100,
+			OrderType:  "Gtc",
+			Meta: map[string]interface{}{
+				"signal":    "grid_reduce_only",
+				"atr_bps":   regime.ATRBps,
+				"regime":    regime.Direction,
+				"standdown": true,
+			},
+		})
+		return orders
+	}
 
 	// Reduce only — close position, don't open new grid
 	if ctx.ReduceOnly && ctx.PositionQty != 0 {
