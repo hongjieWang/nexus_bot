@@ -678,6 +678,27 @@ function App() {
                 {t('hero.eyebrow')}
               </div>
 
+              <div className="module-nav module-nav-toolbar">
+                {modules.map((module) => {
+                  const Icon = moduleIconMap[module.id]
+                  const isActive = module.id === activeModule
+
+                  return (
+                    <button
+                      key={module.id}
+                      type="button"
+                      className={`module-tab ${isActive ? 'active' : ''}`}
+                      onClick={() => setActiveModule(module.id)}
+                    >
+                      <span className="module-tab-icon">
+                        <Icon size={15} />
+                      </span>
+                      <span className="module-tab-label">{module.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
+
               <label className="locale-switcher">
                 <span className="locale-switcher-label">
                   <Globe size={14} />
@@ -762,27 +783,6 @@ function App() {
                 <strong>{item.value}</strong>
               </article>
             ))}
-          </div>
-
-          <div className="module-nav">
-            {modules.map((module) => {
-              const Icon = moduleIconMap[module.id]
-              const isActive = module.id === activeModule
-
-              return (
-                <button
-                  key={module.id}
-                  type="button"
-                  className={`module-tab ${isActive ? 'active' : ''}`}
-                  onClick={() => setActiveModule(module.id)}
-                >
-                  <span className="module-tab-icon">
-                    <Icon size={15} />
-                  </span>
-                  <span className="module-tab-label">{module.label}</span>
-                </button>
-              )
-            })}
           </div>
         </section>
 

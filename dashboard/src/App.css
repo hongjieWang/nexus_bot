@@ -73,7 +73,8 @@
 }
 
 .masthead-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -400,6 +401,12 @@
 
 .module-nav::-webkit-scrollbar {
   display: none;
+}
+
+.module-nav-toolbar {
+  justify-content: center;
+  min-width: 0;
+  padding-bottom: 0;
 }
 
 .module-tab {
@@ -1106,8 +1113,14 @@
     grid-template-columns: 1fr;
   }
 
+  .masthead-toolbar {
+    grid-template-columns: 1fr;
+    justify-content: stretch;
+  }
+
   .module-nav {
     gap: 10px;
+    justify-content: flex-start;
   }
 }
 
@@ -1143,11 +1156,6 @@
   .module-summary-grid,
   .readiness-list-hero {
     grid-template-columns: 1fr;
-  }
-
-  .masthead-toolbar {
-    display: grid;
-    justify-content: stretch;
   }
 
   .toggle-row {
