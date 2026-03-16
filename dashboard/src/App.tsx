@@ -671,7 +671,7 @@ function App() {
     <div className="app-shell">
       <div className="dashboard-layout">
         <section className="hero-grid">
-          <div className="hero-panel masthead">
+          <div className="hero-panel masthead masthead-unified">
             <div className="masthead-toolbar">
               <div className="eyebrow">
                 <Sparkles size={14} />
@@ -727,32 +727,31 @@ function App() {
                 <strong>{tradeEnabled || dexEnabled ? t('hero.runtimeModeArmed') : t('hero.runtimeModeObservation')}</strong>
               </div>
             </div>
-          </div>
 
-          <aside className="hero-panel command-panel">
-            <div className="panel-caption">{t('commandDeck.title')}</div>
-            <div className="command-score">
-              <div>
-                <span className="command-score-label">{t('commandDeck.readinessScoreLabel')}</span>
-                <strong>{interpolate(t('common.readinessScoreValue'), { value: readinessScore })}</strong>
-              </div>
-              <ArrowUpRight size={18} />
-            </div>
-
-            <div className="readiness-list">
-              {readinessItems.map((item) => (
-                <div key={item.label} className="readiness-item">
-                  <span>{item.label}</span>
-                  <strong className={`tone-${item.tone}`}>{item.value}</strong>
+            <div className="hero-command-section">
+              <div className="hero-command-head">
+                <div className="panel-caption">{t('commandDeck.title')}</div>
+                <div className="hero-command-score">
+                  <span className="command-score-label">{t('commandDeck.readinessScoreLabel')}</span>
+                  <strong>{interpolate(t('common.readinessScoreValue'), { value: readinessScore })}</strong>
                 </div>
-              ))}
-            </div>
+              </div>
 
-            <div className="command-note">
-              <Radar size={16} />
-              {t('commandDeck.note')}
+              <div className="readiness-list readiness-list-hero">
+                {readinessItems.map((item) => (
+                  <div key={item.label} className="readiness-item">
+                    <span>{item.label}</span>
+                    <strong className={`tone-${item.tone}`}>{item.value}</strong>
+                  </div>
+                ))}
+              </div>
+
+              <div className="command-note">
+                <Radar size={16} />
+                {t('commandDeck.note')}
+              </div>
             </div>
-          </aside>
+          </div>
         </section>
 
         <section className="section-block module-shell">
@@ -777,13 +776,10 @@ function App() {
                   className={`module-tab ${isActive ? 'active' : ''}`}
                   onClick={() => setActiveModule(module.id)}
                 >
-                  <div className="module-tab-top">
-                    <span className="module-tab-icon">
-                      <Icon size={16} />
-                    </span>
-                    <span className="module-tab-label">{module.label}</span>
-                  </div>
-                  <p className="module-tab-description">{module.description}</p>
+                  <span className="module-tab-icon">
+                    <Icon size={15} />
+                  </span>
+                  <span className="module-tab-label">{module.label}</span>
                 </button>
               )
             })}
