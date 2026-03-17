@@ -11,12 +11,17 @@
 ## 场景 A：Binance Alpha (币安上币/早期项目发现)
 
 ### 1. 业务本质
-一个极度内卷的**“消息驱动”**抢跑游戏。核心目标是在币安发布上币公告的极短时间内，在 BSC/链上 DEX (如 PancakeSwap) 抢先买入该代币。
+一个极度内卷的**“消息驱动”**抢跑游戏。核心目标是在币安发布上币公告或新增资产配置的极短时间内，在 BSC/链上 DEX (如 PancakeSwap) 抢先买入该代币。
 
-### 2. 信号源提取策略
-*   **方案**：采用稳定 API 轮询 (非高风险的 HTML 爬虫)。
-*   **实现**：启动独立 Goroutine 高频轮询币安公共公告接口 (例如 `BAPI` / `cms/article`)。
-*   **触发条件**：正则匹配到包含 "Binance Will List xxx" 等关键字的新公告，极速提取 Token Ticker 并映射为链上合约地址。
+### 2. 信号源提取策略 (Binance Private WebSocket API)
+*   **方案**：彻底放弃公共 HTTP 轮询爬虫，改用**币安官方私有 WebSocket 数据流通道 (`wss://api.binance.com/sapi/wss`)**。
+*   **连接鉴权**：
+    *   **签名规则**：使用 `API_SECRET` 对 URL 参数 (`random`, `topic`, `recvWindow`, `timestamp`) 进行 HMAC SHA256 哈希生成 `signature`。
+    *   **Header 注入**：在 WSS 握手请求头中必须注入 `X-MBX-APIKEY` 以验证身份。
+*   **连接保活机制 (心跳/风控)**：
+    *   **主动 PING**：客户端必须每隔不超过 30 秒 (建议 25 秒) 发送一次空的 PING 帧。若 1 分钟未收到，服务器将强制断开。
+    *   **限流控制**：严格遵守每秒最多 5 条消息的限速 (包含 PING/PONG 和 JSON 负载)，防止 IP 被封禁。
+    *   **有效期**：每个连接最长存活 24 小时，业务逻辑层必须实现自动重连与订阅状态恢复。
 
 ### 3. 交易执行策略 (Sniper Execution)
 由于上币瞬间价格剧烈波动，必须采取激进但可控的执行策略：
