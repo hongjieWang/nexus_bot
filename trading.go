@@ -3,6 +3,7 @@ package main
 import (
 	"bot/config"
 	"bot/database"
+	"bot/notifier"
 	"bot/strategy"
 	"context"
 	"crypto/hmac"
@@ -20,6 +21,8 @@ import (
 	"sync"
 	"time"
 )
+
+var httpClient = &http.Client{Timeout: 10 * time.Second}
 
 const (
 	futuresBase     = "https://fapi.binance.com"
@@ -772,25 +775,7 @@ func fetchKlines(symbol, interval string, limit int) ([]Kline, error) {
 }
 
 func sendTradingAlert(action string, posQty, entry, fillQty, fillPrice, pnl float64) {
-	if discordWebhook == "" {
-		return
-	}
-	var title string
-	if action == "open" {
-		title = fmt.Sprintf("🔵 开仓/加仓 BNB (数量: %.3f)", posQty)
-	} else {
-		title = fmt.Sprintf("⚪ 模拟平仓/减仓 BNB (盈利: $%.2f)", pnl)
-	}
-
-	embed := discordEmbed{
-		Title: title, Color: 0x00C851,
-		Fields: []discordEmbedField{
-			{Name: "净持仓", Value: fmt.Sprintf("%.3f", posQty), Inline: true},
-			{Name: "成交价", Value: fmt.Sprintf("$%.4f", fillPrice), Inline: true},
-		},
-	}
-	body, _ := json.Marshal(discordPayload{Username: "Grid Bot", Embeds: []discordEmbed{embed}})
-	httpClient.Post(discordWebhook, "application/json", strings.NewReader(string(body)))
+	notifier.SendTradingAlert(config.GetConfig("DISCORD_WEBHOOK"), action, posQty, pnl, fillPrice)
 }
 
 func closes(klines []Kline) []float64 {

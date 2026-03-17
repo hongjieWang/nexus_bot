@@ -79,9 +79,9 @@ type SmartWallet struct {
 	TotalTrades    int       `gorm:"type:int;default:0"`         // 总交易笔数
 	WinTrades      int       `gorm:"type:int;default:0"`         // ← 新增
 	ROI            float64   `gorm:"type:double;default:0.0"`    // 平均投资回报率
-	AvgEntryBlocks float64   `gorm:"type:double;default:999"`    // ← 新增：平均入场块数
-	LastActiveAt   time.Time `gorm:"index"`                      // ← 新增：最近一次交易时间
-	IsMEV          bool      `gorm:"type:boolean;default:false"` // 是否被标记为 MEV/套利机器人
+	AvgEntryBlocks float64    `gorm:"type:double;default:999"`    // ← 新增：平均入场块数
+	LastActiveAt   *time.Time `gorm:"index"`                       // ← 新增：最近一次交易时间
+	IsMEV          bool       `gorm:"type:boolean;default:false"`  // 是否被标记为 MEV/套利机器人
 	ClusterID      string    `gorm:"type:varchar(64)"`           // 实体聚类 ID (防女巫)
 	CreatedAt      time.Time `gorm:"autoCreateTime"`
 	UpdatedAt      time.Time `gorm:"autoUpdateTime"`
@@ -118,8 +118,12 @@ type SystemConfig struct {
 	Value string `gorm:"type:text"` // 存储加密后的敏感信息
 }
 
-func InitDB() {
+func InitDB(dsnOverride ...string) {
 	dsn := os.Getenv("MYSQL_DSN")
+	if len(dsnOverride) > 0 && dsnOverride[0] != "" {
+		dsn = dsnOverride[0]
+	}
+
 	if dsn == "" {
 		slog.Warn("MYSQL_DSN 未设置，数据库记录功能已禁用")
 		return

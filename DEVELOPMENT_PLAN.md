@@ -1,96 +1,138 @@
-# Web3 自动化交易套件 (Trading Suite) 进阶开发计划
+# BSC Sniper 项目重构方案（2026 优化版）
 
-基于当前 `main.go` (链上新池监控) 和 `trading.go` (CEX 合约量化) 的雏形，本计划旨在将其演进为一个生产级别、高可用、模块化的 Web3 自动化交易系统。
-
-整体开发计划分为五个阶段（Phase），按照**业务价值优先、基础设施随后**的原则推进。
-
----
-
-## Phase 1: 核心交易闭环补全（DEX 自动化交易与风控）
-**目标**：将目前的“只监视不操作”的链上预警脚本，升级为真正的狙击机器人（Sniper Bot），实现 DEX 的自动买卖闭环。
-**优先级**：⭐⭐⭐⭐⭐ (最高)
-
-- [ ] **1.1 DEX 自动买入模块 (Auto-Buy)**
-  - 接入 PancakeSwap/1inch Router 智能合约。
-  - 实现 `swapExactETHForTokens` 等核心交易构建逻辑。
-  - **Gas 策略**：实现动态 Gas 估算，引入 MEV 防护 RPC (如 bloXroute/Flashbots) 以防被夹。
-  - **滑点控制**：根据市场波动率动态设置 Slippage，避免高点接盘。
-- [ ] **1.2 链上状态管理与自动卖出 (Auto-Sell & TP/SL)**
-  - 在内存中维护链上购入代币的仓位状态。
-  - 监听代币实时价格（通过 WSS `Sync` 事件或定时轮询）。
-  - 实现自动 `Approve` 授权。
-  - 实现基于固定盈亏比或移动止损的自动卖出逻辑 (`swapExactTokensForETH`)。
-- [ ] **1.3 防貔貅与防 Rug Pull 逃生机制 (Panic Sell)**
-  - WSS 实时监听高危合约事件：`OwnershipTransferred` (权限转移)、`LiquidityRemoved` (撤池子)、修改税率等。
-  - 一旦触发风控条件，忽略滑点，立即执行市价清仓 (Panic Sell)。
+**作者**：Grok（xAI）  
+**版本**：v2.0  
+**日期**：2026-03-17  
+**目标**：将当前 ~1800 行 `main.go` + `alpha_engine.go` 重构为**模块化、可测试、可扩展**的顶级 BSC 聪明钱狙击系统，并为后续 **AI（Grok/Claude） + X（Twitter） + 币安广场** 信号集成打好基础。
 
 ---
 
-## Phase 2: 数据持久化与状态管理
-**目标**：解决目前严重依赖内存、重启即丢失状态的问题，为后续的大数据分析和稳定运行奠定基础。
-**优先级**：⭐⭐⭐⭐
+## 一、拆分后的最终项目目录结构
 
-- [ ] **2.1 引入关系型数据库 (PostgreSQL / MySQL)**
-  - 设计并建立 `tokens` 表：记录扫描到的代币 Metadata、初始流动性、创建时间。
-  - 设计并建立 `trades` 表：记录 CEX 和 DEX 的每一笔开平仓记录、资金费率、最终 PnL。
-  - 实现 ORM 接入 (如 GORM)，替换现有的内存 Map 存储。
-- [ ] **2.2 引入高速缓存系统 (Redis)**
-  - 迁移防重发缓存 (`seenTTL`) 至 Redis，支持持久化。
-  - 将 RPC 限速器 (Rate Limiter) 改为基于 Redis 的分布式限速，为未来多节点部署做准备。
-  - 缓存频繁查询的实时价格数据，降低 RPC 节点压力。
+```bash
+bsc-sniper/
+├── go.mod
+├── go.sum
+├── main.go                          # 仅启动顺序 + 优雅关机（<150行）
+├── config/
+│   └── config.go                    # 环境变量统一管理 + 默认值
+├── types/
+│   └── types.go                     # TokenInfo、DEXVersion 等
+├── database/
+│   ├── db.go
+│   ├── models.go
+│   └── repo.go                      # 数据库操作
+├── rpc/
+│   ├── client.go                    # 统一 RPC + 限速器 + 重试
+│   └── limiter.go
+├── dex/
+│   ├── constants.go                 # 所有地址、Topic、Selector
+│   ├── v2.go
+│   └── v3.go
+├── scanner/
+│   ├── new_pool.go                  # processNewPool + 三关筛选
+│   ├── security.go                  # GoPlus 安全审计
+│   └── holder.go                    # 持仓分布分析
+├── alpha/
+│   ├── engine.go                    # Alpha Engine 主入口
+│   ├── scoring.go                   # ROI / WinRate 打分
+│   ├── clustering.go                # 女巫聚类 + 实体聚合
+│   ├── sell_tracker.go
+│   └── funding.go                   # CEX 热钱包溯源
+├── watcher/
+│   ├── smart_money.go               # 存量 Token 聪明钱监听
+│   ├── meme_rush.go                 # Four.Meme Bonding Curve
+│   └── volume.go                    # 量价异常监控
+├── notifier/
+│   └── discord.go                   # 所有 Discord 推送
+├── sniper/
+│   ├── engine.go                    # 自动狙击
+│   └── trading.go
+├── social/                          # ← 新增（AI + X + Binance Square）
+│   ├── client.go
+│   ├── analyzer.go                  # AI 提示词 + Grok 调用
+│   └── score.go                     # 社交信号权重
+├── backtest/
+│   └── backtest.go                  # 完全独立的回测模式
+├── metrics/
+│   └── metrics.go                   # Prometheus 全埋点
+├── utils/
+│   ├── cache.go                     # LRU Seen Cache
+│   ├── price.go
+│   └── token.go                     # fetchSymbol / fetchName
+├── .env.example
+├── strategies.json
+├── Dockerfile
+├── docker-compose.yml
+└── README.md
 
----
+二、详细任务清单（分 4 个阶段，建议 7 天完成）
+Phase 0：准备工作（1 小时）
 
-## Phase 3: “聪明钱”分析系统进阶 (Alpha Generation)
-**目标**：提升链上信号的胜率，过滤噪音，将“聪明钱”系统从简单的计数升级为真正的 Alpha 发现引擎。
-**优先级**：⭐⭐⭐⭐
+go mod init bsc-sniper
+ 创建 .env.example 并补充新增变量（ALPHA_*、SOCIAL_*、GROK_API_KEY 等）
+git checkout -b feature/refactor-modules
+ 备份当前 main.go 和 alpha_engine.go
 
-- [x] **3.1 建立聪明钱数据库与历史战绩回测**
-  - 持久化追踪特定钱包的历史交易记录。
-  - 开发打分模型：基于钱包的历史**胜率 (Win Rate)**、**盈亏比**、**平均投资回报率 (ROI)** 进行动态权重评分。
-  - 淘汰机制：自动剔除近期连续亏损的“伪聪明钱”。
-- [x] **3.2 实体聚类与防女巫 (Clustering)**
-  - 通过资金溯源分析（如资金来自同一交易所提币地址或混币器），将多个小钱包地址标记为同一个实体 (Entity)，避免被虚假交易量欺骗。
-- [x] **3.3 MEV / 套利机器人过滤**
-  - 分析高频交易特征，将三明治机器人 (Sandwich Bot) 和套利机器人从监控名单中剔除，避免被套利交易的买单误导。
+Phase 1：核心基础设施（P0，4-6 小时）
 
----
+ 创建 rpc/（client.go + limiter.go）
+ 创建 utils/cache.go（LRU 替换全局 seen）
+ 创建 metrics/metrics.go（扩展到 15+ 个指标）
+ 创建 config/config.go（struct + godotenv）
+ 重写 main.go（注入依赖，删除所有全局变量）
+ 测试：go run main.go（确认 RPC 限速与 seen 缓存）
 
-## Phase 4: 策略引擎工程化与回测系统
-**目标**：将 `trading.go` 中硬编码的策略解耦，建立量化研究的基础设施。
-**优先级**：⭐⭐⭐
+Phase 2：DEX + Scanner 模块（P0，5-7 小时）
 
-- [ ] **4.1 策略解耦与接口化 (Strategy Framework)**
-  - 定义标准的 `Strategy` 接口，包含 `Init`, `OnTick`, `OnCandle`, `GenerateSignal` 等方法。
-  - 将现有的 EMA/RSI/MACD 策略封装为独立模块。
-  - 支持通过 JSON/YAML 配置文件动态加载和切换策略（例如无缝切换网格、马丁格尔或动量策略）。
-- [ ] **4.2 建立本地回测引擎 (Backtester)**
-  - 接入币安/DEX 历史 K 线和 Tick 数据。
-  - 开发模拟撮合引擎，考虑手续费、滑点和资金费率。
-  - 输出标准回测报告：生成资金曲线 (Equity Curve)、最大回撤 (Max Drawdown)、夏普比率等核心指标。
-- [ ] **4.3 多币种与多时间级别监控**
-  - 扩展系统支持同时扫描全市场 Top 100 币种，谁触发信号就交易谁。
-  - 引入多时间级别确认机制（如：4H 级别确定大趋势方向，15m 级别寻找精确入场点）。
+dex/constants.go（集中所有硬编码）
+dex/v2.go + dex/v3.go
+scanner/new_pool.go、security.go、holder.go
+ 迁移 pollLiquidityBNB、fetchV2/V3LiquidityBNB
+ 测试：新池创建 + Discord 预警完整流程
 
----
+Phase 3：Alpha Engine + Watcher 全拆分（P1，6-8 小时）
 
-## Phase 5: 基础设施、可视化与安全加固
-**目标**：使套件达到可商用或基金管理的生产级别，提升可观测性和资产安全性。
-**优先级**：⭐⭐⭐
+alpha/ 五个文件完整迁移
+watcher/ 三个文件（StartAll() 统一启动）
+notifier/discord.go（统一所有 Alert）
+ 测试：聪明钱监听、Meme Rush、SELL 轨迹、女巫聚类全部正常
 
-- [ ] **5.1 多链架构重构 (Multi-chain Support)**
-  - 抽象区块链交互层 (Chain Interface)。
-  - 快速扩展支持当前高热度链，如 Solana (Raydium/Pump.fun)、Ethereum (Uniswap)、Base 链等。
-- [ ] **5.2 监控大盘与可视化 (Dashboard)**
-  - 接入 Prometheus 采集系统 Metrics（API 延迟、RPC 健康度、内存使用率）。
-  - 开发独立的 Web 前端 (React/Vue)。
-  - 实时可视化展示：总资产变化、日内 PnL 曲线、当前持仓分布。
-- [ ] **5.3 企业级密钥与资产安全 (Security Vault)**
-  - 废弃直接在 `.env` 中明文存储 API Secret 和私钥的做法。
-  - 引入 AWS KMS 或 HashiCorp Vault 进行敏感信息的加密托管与动态解密。
-  - 增加 IP 白名单绑定和提现权限校验机制。
+Phase 4：社交 AI 集成准备 + 收尾（P2，4-6 小时）
 
----
+ 创建 social/ 骨架（analyzer.go 含 Grok 调用模板）
+ 在 scanner/new_pool.go 加入社交 + AI 最终评分
+ 回测逻辑完全移入 backtest/
+ 添加优雅关机（errgroup + context）
+ 编写 main_test.go（覆盖关键函数）
+ 更新 README.md
 
-> **建议执行路径**：
-> 当前首要任务是完成 **Phase 1**，打通 DEX 的资金闭环；随后立即跟进 **Phase 2** 稳定系统底座。当系统能稳定自动赚钱（或亏损被严格控制）后，再向 Phase 3、4 投入精力优化胜率。
+
+三、推荐新增依赖
+Bashgo get github.com/hashicorp/golang-lru/v2
+go get golang.org/x/sync/errgroup
+go get github.com/asaskevich/EventBus
+go get github.com/prometheus/client_golang/prometheus
+go get github.com/joho/godotenv
+
+四、下一步立即行动（建议今天开始）
+优先级顺序：
+
+今天：完成 Phase 1（rpc + config + utils）—— 最快看到效果
+明天：Phase 2（dex + scanner）
+后天：Phase 3（alpha + watcher）
+周末：Phase 4（social AI 集成）
+
+
+文件生成说明：
+
+直接复制上方全部内容保存为 BSC-Sniper-重构方案.md 即可
+可放入项目根目录作为开发路线图
+
+需要我继续生成具体文件代码？
+回复以下任意选项，我立即输出：
+
+「输出 rpc/client.go 完整代码」
+「输出精简版 main.go」
+「输出 social/analyzer.go AI 模板」
+「输出其他模块」
